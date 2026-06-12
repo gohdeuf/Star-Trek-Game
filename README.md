@@ -33,7 +33,7 @@ SpielPython/
 ## ⚡ Quick Start
 
 ```bash
-cd /home/tillv/Projekt/SpielPython
+cd /home/username/Projekt/SpielPython
 python3 main.py
 ```
 
