@@ -1,0 +1,12 @@
+# Databases
+universe.db
+
+# Models
+models/ships/enterprise.glb
+
+# Python Cache Directories
+**/__pycache__/
+
+# IDE/Tool Configurations
+.vscode/
+.continue/
