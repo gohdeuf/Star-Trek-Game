@@ -6,7 +6,8 @@ from world import WorldManager
 import os
 import shutil
 import random # Wichtig, da random unten im Star-Field genutzt wird
-from world.environment import create_skybox 
+from world.environment import create_skybox
+from ui.minimap import Minimap 
 
 # ============ KRITISCH: Aggressive Cache-Bereinigung VOR allem anderen ============
 def aggressive_cache_clear():
@@ -66,6 +67,9 @@ aggressive_cache_clear()
 # ============ Globale Variablen für die F10-Kamera ============
 camera_mode = "follow" # Kann "follow" oder "free" sein
 free_cam = None
+player_ship = None
+camera_controller = None
+world_manager = None
 
 def setup_scene():
 	"""Initialisiere die Spielwelt: Schiffe, Planeten, Monde"""
@@ -120,42 +124,17 @@ def setup_scene():
 				# Berechne die ideale Position hinter dem Heck des Schiffes basierend auf dessen forward-Vektor
 				target_pos = player_ship.position - player_ship.forward * config.CAMERA_DEFAULT_DISTANCE
 				target_pos += player_ship.up * config.CAMERA_DEFAULT_HEIGHT
-
-				
 				# Geschmeidiges Folgen der Position mittels lerp (ohne Klammern bei time.dt)
 				camera.position = lerp(camera.position, target_pos, time.dt * 6)
-				
 				# Kamera blickt stabil auf das Schiff und neigt sich beim Rollen (Q/E) mit
 				camera.look_at(player_ship.position)
 				camera.rotation_z = player_ship.rotation_z
 
+	global camera_controller
 	camera_controller = CameraController()
 
-	# Integrierte Input-Funktion für den F10-Wechsel innerhalb der Szene
-	from ursina.prefabs.first_person_controller import EditorCamera
-	
-	def input(key):
-		global camera_mode, free_cam
-		if key == config.TOGGLE_CAMERA_KEY:
-			if camera_mode == "follow":
-				camera_mode = "free"
-				free_cam = EditorCamera()
-				free_cam.speed = config.CAMERA_FREE_SPEED
-				print("[KAMERA] Freier Flugmodus AKTIVIERT (Steuerung mit rechter Maustaste + WASD)")
-			else:
-				camera_mode = "follow"
-				if free_cam:
-					destroy(free_cam)
-					free_cam = None
-				
-				# KRITISCHER FIX: Setzt Schieflagen der Editor-Kamera beim Zurückwechseln komplett zurück
-				camera.rotation = (0, 0, 0)
-				camera.fov = 60
-				print("[KAMERA] Verfolgungsmodus REAKTIVIERT & ZURÜCKGESETZT")
-
-	camera_controller.input = input
-
 	# ============ Welt-Manager (Lazy Loading + SOI-Logik) ============
+	global world_manager
 	world_manager = WorldManager(player_ship=player_ship)
 
 	# ============ UI/HUD ============
@@ -174,25 +153,50 @@ def setup_scene():
 			color=color.white,
 			scale=1.2,
 		)
-	
-	return {
-		'player_ship': player_ship,
-		'world_manager': world_manager,
-	}
+
+# Import EditorCamera hier (außerhalb von setup_scene)
+from ursina.prefabs.first_person_controller import EditorCamera
+
+def input(key):
+	global camera_mode, free_cam, camera_controller, minimap
+	if key == config.TOGGLE_CAMERA_KEY:
+		if camera_mode == "follow":
+			camera_mode = "free"
+			free_cam = EditorCamera()
+			free_cam.speed = config.CAMERA_FREE_SPEED
+			print("[KAMERA] Freier Flugmodus AKTIVIERT (Steuerung mit rechter Maustaste + WASD)")
+		else:
+			camera_mode = "follow"
+			if free_cam:
+				destroy(free_cam)
+				free_cam = None
+			camera.rotation = (0, 0, 0)
+			camera.fov = 60
+			print("[KAMERA] Verfolgungsmodus REAKTIVIERT & ZURÜCKGESETZT")
+
+	if key == 'tab':
+		if minimap:
+			minimap.toggle()
+
+	if camera_controller:
+		camera_controller.input = input
 
 def main():
 	"""Haupteinstieg: Initialisiere App und starte das Spiel"""
+	global player_ship, world_manager, minimap
 	
 	app = Ursina(
 		title=config.WINDOW_TITLE,
 		fullscreen=True,
 	)
 	
-	scene = setup_scene()
-	create_skybox(scene['player_ship'])
-	player_ship = scene['player_ship']
+	setup_scene()
+	minimap = Minimap(player_ship=player_ship, world_manager=world_manager)
+	create_skybox(player_ship)
 	
 	def exit_game():
+		if world_manager:
+			world_manager._save_player_position()
 		application.quit()
 	
 	cache_reset_triggered = False  

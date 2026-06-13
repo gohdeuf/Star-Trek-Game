@@ -40,6 +40,7 @@ class WorldManager(Entity):
         # DB initialisieren / Seed-Daten anlegen
         db.init_db()
         db.seed_default_universe()
+        self._load_player_position()
 
         # Aktuell geladene Daten
         self.current_sector_id = None
@@ -98,6 +99,7 @@ class WorldManager(Entity):
         old_sector_ids = set(self.loaded_sector_ids)
 
         self.current_sector_id = new_sector_id
+        self._save_player_position()
         self.loaded_sector_ids = db.neighbor_sector_ids(new_sector_id)
 
         # ---- Autonome Generierung neuer Sektoren ----
@@ -397,6 +399,31 @@ class WorldManager(Entity):
         if system:
             print(f"[SOI] Austritt aus System '{system.get('name')}' -> Sektoransicht")
         # ui_manager.switch_to_sector_view()
+
+
+    def _save_player_position(self):
+        """Speichert Spielerschiff-Position in der DB."""
+        if not self.player_ship:
+            return
+        pos = self._ship_position()
+        sid = self._current_sector_id_for_position(pos)
+        if not sid:
+            return
+        db.save_ship_position(
+            ship_id=getattr(self.player_ship, 'ship_id', 'NCC-1701-D'),
+            sector_id=sid,
+            name='Player',
+            x=pos[0], y=pos[1], z=pos[2],
+            warp_speed=0.0,
+        )
+
+    def _load_player_position(self):
+        """Stellt letzte gespeicherte Spielerposition wieder her."""
+        ship_id = getattr(self.player_ship, 'ship_id', 'NCC-1701-D')
+        saved = db.get_ship_by_id(ship_id)
+        if saved:
+            self.player_ship.position = (saved['x'], saved['y'], saved['z'])
+            print(f"[LOAD] Position: ({saved['x']:.0f}, {saved['y']:.0f}, {saved['z']:.0f})")
 
     # ------------------------------------------------------------------
     # Öffentliche Helfer
