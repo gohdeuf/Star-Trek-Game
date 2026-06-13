@@ -148,53 +148,55 @@ class Enterprise(GameEntity):
 		)
 	
 	def update(self):
-		"""Pro Frame: Input verarbeiten, Position aktualisieren"""
+		"""Pro Frame: Input verarbeiten, Position und Richtung aktualisieren"""
 		super().update()
 		dt = time.dt
 		
-		# -------- Input-Verarbeitung --------
-		if held_keys['w']:
-			self.position += self.forward * self.speed * dt
-		if held_keys['s']:
-			self.position -= self.forward * self.speed * dt
-		if held_keys['d']:
-			self.position += self.right * self.speed * dt
-		if held_keys['a']:
-			self.position -= self.right * self.speed * dt
-		
-		if held_keys['space']:
-			self.position += self.up * self.speed * dt
-		if held_keys['left ctrl'] or held_keys['right ctrl']:
-			self.position -= self.up * self.speed * dt
-		
-		# Pfeiltasten für Drehung
+		# -------- 1. DREHUNG (Lokaler Raum über die Ursina-Richtungsachsen) --------
+		# Nickwinkel (Nase Hoch/Runter) mit Pfeiltasten
 		if held_keys['up arrow']:
 			self.rotation_x -= self.rotation_speed * dt
 		if held_keys['down arrow']:
 			self.rotation_x += self.rotation_speed * dt
+			
+		# Gierwinkel (Nase Links/Rechts schwenken) mit Pfeiltasten
 		if held_keys['left arrow']:
 			self.rotation_y -= self.rotation_speed * dt
 		if held_keys['right arrow']:
 			self.rotation_y += self.rotation_speed * dt
 		
+		# Rollen (Schiff um die eigene Längsachse neigen) mit Q/E
 		if held_keys['q']:
 			self.rotation_z -= self.rotation_speed * dt
 		if held_keys['e']:
 			self.rotation_z += self.rotation_speed * dt
 		
+		# WICHTIG: Aktualisiere die Richtungsvektoren direkt aus Ursinas Matrix
 		self._update_direction_vectors()
+		
+		# -------- 2. BEWEGUNG (WASD + Space/Control) --------
+		move_direction = Vec3(0, 0, 0)
+		
+		if held_keys['w']:
+			move_direction += self.forward
+		if held_keys['s']:
+			move_direction -= self.forward
+		if held_keys['d']:
+			move_direction += self.right
+		if held_keys['a']: move_direction -= self.right # FIX FÜR STRG: "left control" statt "left ctrl"
+		if held_keys['space']:
+			move_direction += self.up
+		if held_keys['left control'] or held_keys['right control']:
+			move_direction -= self.up
+			
+		if move_direction.length() > 0:
+			self.position += move_direction.normalized() * self.speed * dt
 	
 	def _update_direction_vectors(self):
-		"""Berechne Richtungs-Vektoren basierend auf Rotation"""
-		angle_rad = math.radians(self.rotation_y)
-		self.forward = Vec3(
-			-math.sin(angle_rad),
-			0,
-			-math.cos(angle_rad)
-		)
-		
-		self.right = Vec3(
-			math.cos(angle_rad),
-			0,
-			-math.sin(angle_rad)
-		)
+		"""Holt die exakten Richtungsvektoren aus der aktuellen Drehung des Schiffes"""
+		# Wir nutzen die eingebauten Richtungs-Eigenschaften von Ursina.
+		# Falls 'world_forward' direkt zickt, nutzen wir die sicheren Standard-Vektoren,
+		# die Ursina bei jeder Rotationsänderung automatisch neu berechnet.
+		self.forward = Vec3(self.forward).normalized()
+		self.right = Vec3(self.right).normalized()
+		self.up = Vec3(self.up).normalized()

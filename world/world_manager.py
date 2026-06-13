@@ -143,7 +143,43 @@ class WorldManager(Entity):
 
         systems = db.get_solar_systems_in_sectors(list(sector_ids))
         for system in systems:
+            self._spawn_star(system)
             self._spawn_planets(system)
+
+    def _spawn_star(self, system):
+        """
+        Spawnt die Sonne (den Stern) des Sonnensystems als sichtbare Entity.
+        Position = rel_x/y/z des Systems.
+        """
+        system_id = system.get("system_id")
+        star_key = (system_id, "__STAR__")  # Eindeutiger Key für Stern
+        
+        # Prüfe, ob Stern bereits gespawnt
+        if star_key in self.planet_entities:
+            return
+        
+        star_x = system.get("rel_x", 0)
+        star_y = system.get("rel_y", 0)
+        star_z = system.get("rel_z", 0)
+        star_name = system.get("name", "Unknown Star")
+        
+        # Erstelle eine gelbe Sphäre als Stern
+        star_entity = Entity(
+            model='sphere',
+            color=color.yellow,
+            position=(star_x, star_y, star_z),
+            scale=3.0,  # Stern ist größer als Planeten
+            name=star_name,
+        )
+        
+        # Speichere Stern-Entity separat mit eindeutigem Key
+        self.planet_entities[star_key] = {
+            "entity": star_entity,
+            "data": {"name": star_name},
+            "system_id": system_id,
+            "sector_id": system.get("sector_id"),
+            "is_star": True,
+        }
 
     def _spawn_planets(self, system):
         """
@@ -277,7 +313,7 @@ class WorldManager(Entity):
 
     def _unload_planets(self, sector_ids):
         """
-        Zerstört Planeten-Entities der gegebenen Sektoren und schreibt den
+        Zerstört Planeten-Entities (und Sterne) der gegebenen Sektoren und schreibt den
         aktuellen Ressourcenstand (z.B. nach Abbau durch den Spieler)
         zurück in die zugehörige solar_systems-Zeile.
         """
@@ -289,6 +325,12 @@ class WorldManager(Entity):
 
             system_id, planet_name = key
             entity = info["entity"]
+
+            # Sterne werden nicht in planets_data gespeichert, nur zerstört
+            if info.get("is_star"):
+                destroy(entity)
+                del self.planet_entities[key]
+                continue
 
             # Aktuellen Ressourcenstand von der Entity übernehmen (falls
             # GenericPlanet.resources während des Spiels verändert wurde)

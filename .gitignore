@@ -6,6 +6,7 @@ models/ships/enterprise.glb
 
 # Python Cache Directories
 **/__pycache__/
+.cache_reset_on_next_start
 
 # IDE/Tool Configurations
 .vscode/

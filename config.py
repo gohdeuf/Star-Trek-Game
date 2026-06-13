@@ -19,6 +19,8 @@ VSYNC: bool = True  # Vertical Sync für smooth gameplay
 # Kamera-Standard
 CAMERA_DEFAULT_DISTANCE: float = 15
 CAMERA_DEFAULT_HEIGHT: float = 5
+CAMERA_FREE_SPEED: float = 30        # Wie schnell fliegt die freie Kamera? (NEU)
+TOGGLE_CAMERA_KEY: str = "f10"       # Die Taste zum Umschalten (NEU)
 
 # Schiffe-Standard (Scale, Speed etc.)
 SHIP_DEFAULT_SPEED: float = 15  # Einheiten/Sekunde
