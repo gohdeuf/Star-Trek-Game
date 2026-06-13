@@ -184,7 +184,7 @@ def main():
 	
 	app = Ursina(
 		title=config.WINDOW_TITLE,
-		fullscreen=False,
+		fullscreen=True,
 	)
 	
 	scene = setup_scene()
