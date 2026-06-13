@@ -26,6 +26,12 @@ SpielPython/
 │   │   ├── earth.glb
 │   │   └── mars.glb
 │   └── ...
+├── world/
+|   ├── generator.py        # Generiert die planten/sektoren.
+|   ├── soi.py              # Dies ist da um den Einflussbereich der z.b. Sonne zu berechnen
+|   ├── database.py         # Datenbank für sektoren, Sonnen, Planeten usw.
+|   ├── world_manager.py    # Liest die Datenbank von database.py aus und erstellt Planeten und sonnen als enteties
+|   ├── __init__.py         # Enthält die Datenbank- und Sandbox-Welt-Logik
 │
 └── README.md              # Diese Datei
 ```
@@ -33,15 +39,14 @@ SpielPython/
 ## ⚡ Quick Start
 
 ```bash
-cd /home/tillv/Projekt/SpielPython
+cd /home/username/Projekt/SpielPython
 python3 main.py
 ```
 
 Du solltest sehen:
 - Eine Enterprise-Klasse D (aus Primitiven gebaut)
-- Erde & Mars im Weltraum
-- Mond um die Erde
-- Sternenfeld als Hintergrund
+- Sonne und Planeten
+- Planeten als Hintergrund
 
 ### Steuerung
 - **W/A/S/D** — Schiff bewegen (Vorwärts/Links/Zurück/Rechts)
@@ -49,6 +54,7 @@ Du solltest sehen:
 - **Pfeiltasten** — Pitch (hoch/runter) und Yaw (drehen)
 - **Q/E** — Roll (Seitendrehung)
 - **ESC** — Beenden
+- **F12** — Cache löschen beim Nächsten Start (Development Only)
 
 ## 🛠️ Wie wird das Projekt erweitert?
 
@@ -86,28 +92,6 @@ SHIPS = {
 
 ```python
 enemy = load_ship('warbird', position=(30, 0, 0))
-```
-
-### 2️⃣ Neuen Planeten hinzufügen
-
-1. Erweiter `entities/planets.py`:
-
-```python
-class Jupiter(Planet):
-    def __init__(self, position=(100, 0, 0), **kwargs):
-        super().__init__(
-            name="Jupiter",
-            position=position,
-            radius=5.0,
-            color_val=color.orange,
-            **kwargs
-        )
-```
-
-2. Nutze es in `main.py`:
-
-```python
-jupiter = load_planet('jupiter', position=(100, 0, 0))
 ```
 
 ## 🎨 Blender-Modelle integrieren
@@ -180,7 +164,3 @@ player_ship = load_ship('enterprise', position=(0, 0, 0), use_builtin_model=Fals
 - `Font Arial nicht gefunden?` — ursina nutzt `courier`, `arial`, etc. Wenn nötig, siehe `config.py`
 - `Modell lädt nicht?` — Prüfe den Pfad in `MODELS_PATH` und die Datei-Extension
 - `Import-Fehler?` — Stelle sicher, dass alle `__init__.py`-Dateien in `entities/` vorhanden sind
-
----
-
-**Viel Spaß beim Entwickeln! 🚀**
