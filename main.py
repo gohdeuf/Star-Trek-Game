@@ -98,18 +98,18 @@ def setup_scene():
 	# )
 	
 	# ============ Star-Field (Sterne im Hintergrund) ============
-	for _ in range(100):
-		star_pos = Vec3(
-			random.uniform(-200, 200),
-			random.uniform(-100, 100),
-			random.uniform(-200, 0),
-		)
-		Entity(
-			model='sphere',
-			scale=0.1,
-			color=color.white,
-			position=star_pos,
-		)
+	#for _ in range(100):
+	#	star_pos = Vec3(
+	#		random.uniform(-200, 200),
+	#		random.uniform(-100, 100),
+	#		random.uniform(-200, 0),
+	#	)
+	#	Entity(
+	#		model='sphere',
+	#		scale=0.1,
+	#		color=color.white,
+	#		position=star_pos,
+	#	)
 	
 	# ============ Kamera Setup (Folgen & F10 Freiflug) ============
 	class CameraController(Entity):

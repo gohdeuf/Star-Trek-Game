@@ -3,6 +3,7 @@ universe.db
 
 # Models
 **.glb
+**/assets/generated_textures/
 
 # Python Cache Directories
 **/__pycache__/

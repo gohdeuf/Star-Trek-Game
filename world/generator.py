@@ -31,7 +31,9 @@ from . import database as db
 SYSTEM_SPAWN_CHANCE = 0.35
 
 # Wertebereiche für generierte Systeme
-SOI_MIN, SOI_MAX = 600.0, 1500.0
+# (halbiert ggü. ursprünglichem Wert, damit ein System inkl. SOI bequem
+# innerhalb eines einzelnen Sektors (SECTOR_SIZE=2000) Platz hat)
+SOI_MIN, SOI_MAX = 300.0, 750.0
 PLANETS_MIN, PLANETS_MAX = 0, 5
 
 # Planeten-Klassen mit Gewichtung für die Zufallsauswahl (höher = häufiger).
@@ -94,6 +96,26 @@ def _seed_for_sector(sector_id):
 
 
 # ---------------------------------------------------------------------------
+# Sektor-Koordinaten -> Welt-Ursprung
+# ---------------------------------------------------------------------------
+
+def _sector_world_origin(sector_id, sector_size):
+    """
+    Berechnet die Weltkoordinate der "unteren" Ecke (Ursprung) des durch
+    sector_id beschriebenen Sektor-Würfels.
+
+    Erwartet sector_id im Format 'Sector_Alpha_<sx>_<sy>_<sz>'.
+    Bei unbekanntem Format wird (0,0,0) als Fallback verwendet.
+    """
+    parts = sector_id.split("_")
+    try:
+        sx, sy, sz = int(parts[-3]), int(parts[-2]), int(parts[-1])
+    except (ValueError, IndexError):
+        sx, sy, sz = 0, 0, 0
+    return sx * sector_size, sy * sector_size, sz * sector_size
+
+
+# ---------------------------------------------------------------------------
 # Hauptfunktion: Sektor bei Bedarf generieren
 # ---------------------------------------------------------------------------
 
@@ -150,14 +172,29 @@ def _generate_solar_system(sector_id, rng):
     """
     Erzeugt ein vollständiges solar_systems-Dict (ohne system_id, wird beim
     Insert von SQLite vergeben) inkl. planets_data mit Ressourcen.
+
+    WICHTIG (BUGFIX): rel_x/rel_y/rel_z sind ABSOLUTE Weltkoordinaten und
+    liegen garantiert innerhalb des durch sector_id beschriebenen
+    Sektor-Würfels (also world_to_sector_coords(rel_x, rel_y, rel_z) ergibt
+    wieder genau sector_id). Vorher wurden hier nur lokale Offsets im
+    Bereich -1000..1000 erzeugt, die überall im Code (Spawn-Positionen,
+    SOI-Distanzberechnung) als absolute Weltkoordinaten interpretiert
+    wurden -> dadurch landeten ALLE generierten Systeme physisch in der
+    Nähe von (0,0,0), unabhängig von ihrem sector_id-Tag. Das Lazy-Loading
+    (Laden/Entladen anhand von sector_id) lief dadurch komplett an der
+    tatsächlichen Position der Objekte vorbei, was zu fehlerhaftem
+    Chunk-Loading und verschwindenden Planeten bei Annäherung führte.
     """
     soi = rng.uniform(SOI_MIN, SOI_MAX)
 
-    # Stern-Position relativ zum Sektor-Ursprung, innerhalb des Sektorvolumens
-    half = db.SECTOR_SIZE / 2.0
-    rel_x = rng.uniform(-half, half)
-    rel_y = rng.uniform(-half / 4.0, half / 4.0)  # Sterne meist nahe galaktischer Ebene
-    rel_z = rng.uniform(-half, half)
+    size = db.SECTOR_SIZE
+    ox, oy, oz = _sector_world_origin(sector_id, size)
+
+    # Stern-Position: absolute Weltkoordinate, gleichverteilt innerhalb
+    # des Sektor-Würfels [o, o + size) entlang jeder Achse.
+    rel_x = ox + rng.uniform(0, size)
+    rel_y = oy + rng.uniform(0, size)
+    rel_z = oz + rng.uniform(0, size)
 
     rot_x = rng.uniform(0, 360)
     rot_y = rng.uniform(0, 360)
