@@ -400,21 +400,25 @@ def seed_default_universe():
         "name": "Sol-System",
         "rel_x": 0.0, "rel_y": 0.0, "rel_z": 0.0,
         "rot_x": 0.0, "rot_y": 0.0, "rot_z": 0.0,
-        "sphere_of_influence": 1000.0,
+        "sphere_of_influence": 500.0,
         "planets_data": [
-            {
-                "name": "earth",
-                "type": "earth",  # konkrete Klasse (entities.planets.Earth, Klasse M)
-                "orbit_radius": 50.0,
-                "orbit_angle": 0.0,
-                "resources": {"max": 1000, "current": 1000},
-            },
-            {
-                "name": "mars",
-                "type": "mars",  # konkrete Klasse (entities.planets.Mars, Klasse K)
-                "orbit_radius": 80.0,
-                "orbit_angle": 0.0,
-                "resources": {"max": 800, "current": 800},
-            },
-        ],
-    })
+        {"name": "mercury", "type": "D",     "orbit_radius": 15.0,  "orbit_angle": 10.0,
+         "resources": {"max": 3000, "current": 3000}},
+        {"name": "venus",   "type": "Y",     "orbit_radius": 20.0,  "orbit_angle": 95.0,
+         "resources": {"max": 400, "current": 400}},
+        {"name": "earth",   "type": "earth", "orbit_radius": 25.0,  "orbit_angle": 0.0,
+         "resources": {"max": 1000, "current": 1000}},
+        {"name": "mars",    "type": "mars",  "orbit_radius": 40.0,  "orbit_angle": 0.0,
+         "resources": {"max": 800, "current": 800}},
+        {"name": "jupiter", "type": "J",     "orbit_radius": 65.0,  "orbit_angle": 200.0,
+         "resources": {"max": 0, "current": 0}},
+        {"name": "saturn",  "type": "J",     "orbit_radius": 90.0,  "orbit_angle": 300.0,
+         "resources": {"max": 0, "current": 0}},
+        {"name": "uranus",  "type": "T",     "orbit_radius": 115.0, "orbit_angle": 30.0,
+         "resources": {"max": 0, "current": 0}},
+        {"name": "neptune", "type": "T",     "orbit_radius": 140.0, "orbit_angle": 160.0,
+         "resources": {"max": 0, "current": 0}},
+        {"name": "pluto",   "type": "D",     "orbit_radius": 165.0, "orbit_angle": 250.0,
+         "resources": {"max": 2500, "current": 2500}},
+    ],
+})

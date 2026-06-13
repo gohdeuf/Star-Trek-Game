@@ -14,7 +14,7 @@ Verantwortlichkeiten:
 
 from ursina import Entity, color, destroy, Vec3
 import math
-
+from .planet_textures import generate_planet_texture, seed_for_planet
 from . import database as db
 from . import generator
 from .soi import SOITracker, FlightState, world_to_system_relative
@@ -98,7 +98,6 @@ class WorldManager(Entity):
         old_sector_ids = set(self.loaded_sector_ids)
 
         self.current_sector_id = new_sector_id
-        db.ensure_sector(new_sector_id)
         self.loaded_sector_ids = db.neighbor_sector_ids(new_sector_id)
 
         # ---- Autonome Generierung neuer Sektoren ----
@@ -219,28 +218,35 @@ class WorldManager(Entity):
 
     def _try_load_planet(self, planet, position):
         """
-        Erzeugt die Planeten-Entity über load_planet(<Klassencode>, ...).
-        `planet` ist das dict aus planets_data (siehe world/generator.py):
-            { "name": ..., "type": "M"/"D"/"J"/..., "resources": {...}, ... }
-
-        `type` ist der Star-Trek-Klassencode (siehe entities.planets.PLANET_CLASSES)
-        und bestimmt Aussehen (Radius/Farbe) sowie Standard-Ressourcenbereich.
+        Erzeugt die Planeten-Entity über load_planet(<Klassencode>, ...) und
+        legt zusätzlich eine prozedural generierte Perlin-Noise-Textur (siehe
+        planet_textures.py) darüber, damit Planeten nicht mehr als einfarbige
+        Kugeln erscheinen.
         """
+        planet_type = planet.get("type", "M")
+        texture_seed = seed_for_planet(planet.get("name", "Unknown"))
+
         if load_planet is None:
-            # entities-Modul nicht verfügbar -> einfache Sphere als Fallback
-            return Entity(model='sphere', color=color.white, position=position, scale=2)
+            entity = Entity(model='sphere', color=color.white, position=position, scale=2)
+        else:
+            try:
+                entity = load_planet(
+                    planet_type,
+                    position=position,
+                    name=planet.get("name", "Unknown Planet"),
+                    resources=planet.get("resources"),
+                )
+            except Exception as e:
+                print(f"[WARN] Konnte Planet '{planet.get('name')}' (Typ {planet_type}) nicht laden: {e}")
+                entity = Entity(model='sphere', color=color.white, position=position, scale=2)
 
         try:
-            return load_planet(
-                planet.get("type", "M"),
-                position=position,
-                name=planet.get("name", "Unknown Planet"),
-                resources=planet.get("resources"),
-            )
+            entity.texture = generate_planet_texture(planet_type, seed=texture_seed)
+            entity.color = color.white  # Textur darf nicht eingefärbt werden
         except Exception as e:
-            print(f"[WARN] Konnte Planet '{planet.get('name')}' (Typ {planet.get('type')}) nicht laden: {e}")
-            return Entity(model='sphere', color=color.white, position=position, scale=2)
+            print(f"[WARN] Konnte Textur für '{planet.get('name')}' nicht erzeugen: {e}")
 
+        return entity
     def _spawn_station(self, station):
         entity = Entity(
             model='cube',
