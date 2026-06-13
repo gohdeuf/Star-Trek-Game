@@ -2,7 +2,7 @@
 
 A modular project structure for a 3D game using **ursina** (Python 3D engine).
 
-## 📁 Projekt-Struktur
+## 📁 Project sturcture
 
 ```
 SpielPython/
@@ -135,7 +135,7 @@ player_ship = load_ship('enterprise', position=(0, 0, 0), use_builtin_model=Fals
 
 ## 📝 Important files explained briefly
 
-| Datei | Zweck |
+| File | Purpose |
 |-------|-------|
 | `main.py` | App initialization, scene setup, only 80 lines of pure code |
 | `config.py` | Window, camera, speed, debug flags |
