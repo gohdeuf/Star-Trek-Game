@@ -6,6 +6,7 @@ from world import WorldManager
 import os
 import shutil
 import random # Wichtig, da random unten im Star-Field genutzt wird
+from world.environment import create_skybox 
 
 # ============ KRITISCH: Aggressive Cache-Bereinigung VOR allem anderen ============
 def aggressive_cache_clear():
@@ -160,6 +161,7 @@ def setup_scene():
 	# ============ UI/HUD ============
 	if config.SHOW_HELP_TEXT:
 		help_text = Text(
+			parent=camera.ui,
 			text=(
 				"=== Steuerung ===\n"
 				"W/A/S/D: Bewegen | Space/Ctrl: Hoch/Runter\n"
@@ -169,7 +171,6 @@ def setup_scene():
 				"ESC: Beenden"
 			),
 			position=(-0.48, 0.45),
-			font='courier',
 			color=color.white,
 			scale=1.2,
 		)
@@ -188,6 +189,7 @@ def main():
 	)
 	
 	scene = setup_scene()
+	create_skybox(scene['player_ship'])
 	player_ship = scene['player_ship']
 	
 	def exit_game():

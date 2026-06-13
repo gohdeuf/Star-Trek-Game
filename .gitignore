@@ -2,12 +2,14 @@
 universe.db
 
 # Models
-models/ships/enterprise.glb
+**.glb
 
 # Python Cache Directories
 **/__pycache__/
 .cache_reset_on_next_start
+test.py
 
 # IDE/Tool Configurations
 .vscode/
 .continue/
+.venv

@@ -27,9 +27,8 @@ class Enterprise(GameEntity):
 		self.velocity = Vec3(0, 0, 0)
 		
 		# Richtungs-Vektoren für Bewegung
-		self.forward = Vec3(0, 0, -1)
-		self.right = Vec3(1, 0, 0)
-		self.up = Vec3(0, 1, 0)
+		self.look_at(self.position + Vec3(0, 0, -1))
+
 		
 		# Nutze eingebaute Geometrie oder später ein Blender-Modell
 		if use_builtin_model:
@@ -44,7 +43,7 @@ class Enterprise(GameEntity):
 		
 		# Nutze ABSOLUTEN Pfad für maximale Zuverlässigkeit
 		base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-		model_path_rel = "models/ships/enterprise.glb"
+		model_path_rel = "models/ships/Enterprised.glb"
 		model_path_abs = os.path.join(base_dir, model_path_rel)
 		
 		print(f"\n[DEBUG] ========== Modell-Lade-Debug ==========")
@@ -69,7 +68,7 @@ class Enterprise(GameEntity):
 		
 		# Lade mit relativem Pfad (ursina funktioniert besser damit)
 		self.model = model_path_rel
-		self.scale = 1.0  # Anpassen je nach Modell-Größe
+		# Hinweis: Die Skalierung wird direkt im Blender-Modell vorgenommen
 		print(f"[OK] Modell erfolgreich geladen: {model_path_rel}")
 	
 	def _build_ship_builtin(self):
@@ -193,10 +192,9 @@ class Enterprise(GameEntity):
 			self.position += move_direction.normalized() * self.speed * dt
 	
 	def _update_direction_vectors(self):
-		"""Holt die exakten Richtungsvektoren aus der aktuellen Drehung des Schiffes"""
-		# Wir nutzen die eingebauten Richtungs-Eigenschaften von Ursina.
-		# Falls 'world_forward' direkt zickt, nutzen wir die sicheren Standard-Vektoren,
-		# die Ursina bei jeder Rotationsänderung automatisch neu berechnet.
-		self.forward = Vec3(self.forward).normalized()
-		self.right = Vec3(self.right).normalized()
-		self.up = Vec3(self.up).normalized()
+		"""
+		Die Richtungsvektoren (forward, right, up) werden automatisch von Ursina 
+		basierend auf der Rotation berechnet. Diese Methode ist hier aus Dokumentationsgründen,
+		es ist keine manuelle Aktualisierung nötig.
+		"""
+		pass
