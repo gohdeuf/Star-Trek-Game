@@ -7,7 +7,7 @@ import os
 import shutil
 import random # Wichtig, da random unten im Star-Field genutzt wird
 from world.environment import create_skybox
-from ui.minimap import Minimap 
+from ui.minimap import Minimap
 
 # ============ KRITISCH: Aggressive Cache-Bereinigung VOR allem anderen ============
 def aggressive_cache_clear():
@@ -73,8 +73,18 @@ world_manager = None
 
 def setup_scene():
 	"""Initialisiere die Spielwelt: Schiffe, Planeten, Monde"""
-	global camera_mode, free_cam
-	
+	global camera_mode, free_cam, player_ship, world_manager
+	from world.database import get_ship_by_id  # Importiere deine DB-Funktion
+	db_daten = get_ship_by_id("NCC-1701-D")
+	if db_daten:
+        	# Hier holen wir die echten Koordinaten aus der DB
+		start_pos = (db_daten['x'], db_daten['y'], db_daten['z'])
+		print(f"[LOAD] Schiff aus DB geladen bei: {start_pos}")
+	else:
+       	# Fallback, falls die DB leer ist
+		start_pos = (0, 0, 0)
+
+		
 	# ============ Fenster & Rendering Setup ============
 	window.size = (config.WINDOW_WIDTH, config.WINDOW_HEIGHT)
 	camera.background_color = config.BG_COLOR
@@ -86,7 +96,7 @@ def setup_scene():
 	
 	# ============ Lade Schiffe ============
 	# FIX: use_builtin_model auf True gesetzt, damit die primitive Enterprise gerendert wird!
-	player_ship = load_ship('enterprise', position=(0, 0, 0), use_builtin_model=False)
+	player_ship = load_ship('enterprise', position=start_pos, use_builtin_model=False)
 	player_ship.ship_id = "NCC-1701-D"
 	
 	# ============ Lade Planeten & Monde [DEPRECATED] ============
