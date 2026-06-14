@@ -8,6 +8,7 @@ import shutil
 import random # Wichtig, da random unten im Star-Field genutzt wird
 from world.environment import create_skybox
 from ui.minimap import Minimap
+from ui.free_cam import FreeCam
 
 # ============ KRITISCH: Aggressive Cache-Bereinigung VOR allem anderen ============
 def aggressive_cache_clear():
@@ -129,16 +130,22 @@ def setup_scene():
 	class CameraController(Entity):
 		def update(self):
 			global camera_mode
-			
+        
+        	# 1. SICHERHEITSBREMSE: Wenn Freecam aktiv ist, tu absolut nichts!
+			if camera_mode == "free":
+				return
+            
 			if camera_mode == "follow" and player_ship:
-				# Berechne die ideale Position hinter dem Heck des Schiffes basierend auf dessen forward-Vektor
+            	# Berechne die ideale Position hinter dem Heck des Schiffes
 				target_pos = player_ship.position - player_ship.forward * config.CAMERA_DEFAULT_DISTANCE
 				target_pos += player_ship.up * config.CAMERA_DEFAULT_HEIGHT
-				# Geschmeidiges Folgen der Position mittels lerp (ohne Klammern bei time.dt)
-				camera.position = lerp(camera.position, target_pos, time.dt * 6)
-				# Kamera blickt stabil auf das Schiff und neigt sich beim Rollen (Q/E) mit
-				camera.look_at(player_ship.position)
-				camera.rotation_z = player_ship.rotation_z
+            
+            # Geschmeidiges Folgen
+			camera.position = lerp(camera.position, target_pos, time.dt * 6)
+            
+            # Kamera blickt stabil auf das Schiff
+			camera.look_at(player_ship.position)
+			camera.rotation_z = player_ship.rotation_z
 
 	global camera_controller
 	camera_controller = CameraController()
@@ -167,29 +174,29 @@ def setup_scene():
 # Import EditorCamera hier (außerhalb von setup_scene)
 from ursina.prefabs.first_person_controller import EditorCamera
 
+# Oben in main.py, EditorCamera-Import ERSETZEN durch:
+from ui.free_cam import FreeCam
+
+# input()-Funktion – EditorCamera-Zeilen ersetzen:
 def input(key):
-	global camera_mode, free_cam, camera_controller, minimap
-	if key == config.TOGGLE_CAMERA_KEY:
-		if camera_mode == "follow":
-			camera_mode = "free"
-			free_cam = EditorCamera()
-			free_cam.speed = config.CAMERA_FREE_SPEED
-			print("[KAMERA] Freier Flugmodus AKTIVIERT (Steuerung mit rechter Maustaste + WASD)")
-		else:
-			camera_mode = "follow"
-			if free_cam:
-				destroy(free_cam)
-				free_cam = None
-			camera.rotation = (0, 0, 0)
-			camera.fov = 60
-			print("[KAMERA] Verfolgungsmodus REAKTIVIERT & ZURÜCKGESETZT")
+    global camera_mode, free_cam, camera_controller
+    if key == config.TOGGLE_CAMERA_KEY:
+        if camera_mode == "follow":
+            camera_mode = "free"
+            if camera_controller:
+                camera_controller.disable()
+            free_cam = FreeCam(speed=config.CAMERA_FREE_SPEED)
+            print("[KAMERA] Freier Flugmodus AKTIVIERT (RMB halten + WASD)")
+        else:
+            camera_mode = "follow"
+            if free_cam:
+                destroy(free_cam)
+                free_cam = None
+            if camera_controller:
+                camera_controller.enable()
+            camera.fov = 60
+            print("[KAMERA] Verfolgungsmodus REAKTIVIERT")
 
-	if key == 'tab':
-		if minimap:
-			minimap.toggle()
-
-	if camera_controller:
-		camera_controller.input = input
 
 def main():
 	"""Haupteinstieg: Initialisiere App und starte das Spiel"""
@@ -236,6 +243,10 @@ def main():
 				on_cache_reset_key()
 			if held_keys['escape']:
 				exit_game()
+
+		def input(self, key):
+			if key == 'tab':
+				minimap.toggle()
 	
 	input_handler = InputHandler()
 	
