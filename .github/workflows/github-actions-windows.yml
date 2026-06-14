@@ -1,0 +1,32 @@
+name: Spiel manuell bauen
+
+# Dadurch wird der manuelle Startknopf aktiviert
+on:
+  workflow_dispatch:
+
+jobs:
+  build-Bindoj:
+    runs-on: windows-latest
+    steps:
+      - name: Code herunterladen
+        uses: actions/checkout@v4
+
+      - name: Python einrichten
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.15.5'
+
+      - name: Abhängigkeiten installieren
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Spiel mit PyInstaller bauen
+        run: pyinstaller main.spec
+
+      - name: Fertiges Spiel speichern
+        uses: actions/upload-artifact@v4
+        with:
+          name: Spiel-Bindoj-Build
+          path: dist/
