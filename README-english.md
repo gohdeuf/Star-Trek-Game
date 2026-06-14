@@ -116,7 +116,7 @@ def __init__(self, position=(0, 0, 0), use_builtin_model=True, **kwargs):
         self._load_ship_model()     # load Blender model
 ```
 
-Und implementiere `_load_ship_model()`:
+And implement `_load_ship_model()`:
 
 ```python
 def _load_ship_model(self):
