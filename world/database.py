@@ -373,6 +373,17 @@ def delete_ship(ship_id):
     finally:
         conn.close()
 
+def get_ship_by_id(ship_id):
+    """Gibt ein einzelnes Schiff anhand seiner ship_id zurück, oder None."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM space_ships_sector WHERE ship_id = ?", (ship_id,)
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
 
 # ---------------------------------------------------------------------------
 # Seed-Daten: legt das Sol-System an, falls die DB leer ist
