@@ -12,7 +12,7 @@ a = Analysis(
     datas=[
         ('world/', 'world/'), 
         ('models/', 'models/'), 
-        ('enteties/', 'enteties/'),
+        ('entities/', 'entities/'),
         ('ui/', 'ui/'),
         (ursina_path, 'ursina') # Wichtig, damit Ursina-eigene Texturen geladen werden
     ],
