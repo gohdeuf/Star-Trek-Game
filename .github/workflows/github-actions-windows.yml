@@ -10,6 +10,11 @@ permissions:
 jobs:
   build-Bindoj:
     runs-on: windows-latest
+    
+    # Hier werden die minimalen Rechte für diesen Job festgelegt
+    permissions:
+      contents: read
+
     steps:
       - name: Code herunterladen
         uses: actions/checkout@v4

@@ -13,6 +13,7 @@ a = Analysis(
         ('world/', 'world/'), 
         ('models/', 'models/'), 
         ('enteties/', 'enteties/'),
+        ('ui/', 'ui/'),
         (ursina_path, 'ursina') # Wichtig, damit Ursina-eigene Texturen geladen werden
     ],
     hiddenimports=[],
