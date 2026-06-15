@@ -17,9 +17,9 @@ BG_COLOR: tuple = (0.05, 0.05, 0.1)  # Tiefes Blau
 VSYNC: bool = True  # Vertical Sync für smooth gameplay
 
 # Kamera-Standard
-CAMERA_DEFAULT_DISTANCE: float = 5
-CAMERA_DEFAULT_HEIGHT: float = 0.5
-CAMERA_FREE_SPEED: float = 30        # Wie schnell fliegt die freie Kamera? (NEU)
+CAMERA_DEFAULT_DISTANCE: float = 15
+CAMERA_DEFAULT_HEIGHT: float = 5.0
+CAMERA_FREE_SPEED: float = 10        # Wie schnell fliegt die freie Kamera? (NEU)
 TOGGLE_CAMERA_KEY: str = "f10"       # Die Taste zum Umschalten (NEU)
 
 # Schiffe-Standard (Scale, Speed etc.)

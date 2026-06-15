@@ -1,140 +1,245 @@
 """
-ui/minimap.py
-=============
-HUD-Übersichtskarte (obere rechte Ecke).
-
-- Heading-Up: Spieler-Vorwärtsrichtung zeigt immer nach oben auf der Karte
-- Spieler ist immer in der Mitte (cyan Marker + Richtungsstrahl)
-- Sonnensysteme = gold Punkte mit Kurzname
-- Koordinaten + Heading-Anzeige am unteren Rand
-- Umschalten mit TAB (minimap.toggle())
+ui/minimap.py  –  v8 (Final Camera Fix)
+==============================================
+Kernfix: Wir modifizieren die BitMaske der Hauptkamera sicher, indem wir
+das _MM_BIT mit einer binären UND-Verknüpfung (AND NOT) abziehen.
+So wird das geschützte `overall_bit` nicht berührt (AssertionError behoben).
+hide() erhält wieder korrekte Bitmasken (TypeError behoben).
 """
 
 import math
-from ursina import Entity, Text, camera, color, destroy
+from ursina import Entity, Text, camera, color, window
+from panda3d.core import (
+    Camera as P3DCamera,
+    OrthographicLens,
+    NodePath,
+    PandaNode,
+    BitMask32,
+    TextNode,
+    LineSegs,
+    GeomVertexData,
+    GeomVertexFormat,
+    GeomVertexWriter,
+    GeomTriangles,
+    Geom,
+    GeomNode,
+)
+import builtins
 
 
-class Minimap(Entity):
-    # ---- Konfiguration ------------------------------------------------
-    CX    = 0.63     # Kartenmitte X auf camera.ui
-    CY    = 0.29     # Kartenmitte Y auf camera.ui
-    SIZE  = 0.24     # Kantenlänge (screen units)
-    RANGE = 4000.0   # Sichtradius in Welteinheiten (= 2 × SECTOR_SIZE)
+def _get_base():
+    return builtins.__dict__.get('base')
+
+# Wir definieren unser dediziertes Minimap-Bit
+_MM_BIT = BitMask32.bit(8)
+
+
+def _u2p(x, y, z):
+    return x, -z, y
+
+
+def _make_sphere(radius, r, g, b):
+    stacks, slices = 12, 18
+    fmt   = GeomVertexFormat.getV3()
+    vdata = GeomVertexData('sp', fmt, Geom.UHStatic)
+    vdata.setNumRows((stacks + 1) * (slices + 1))
+    vw = GeomVertexWriter(vdata, 'vertex')
+
+    for i in range(stacks + 1):
+        phi = math.pi * i / stacks
+        sp, cp = math.sin(phi), math.cos(phi)
+        for j in range(slices + 1):
+            theta = 2 * math.pi * j / slices
+            vw.addData3(
+                sp * math.cos(theta) * radius,
+                sp * math.sin(theta) * radius,
+                cp * radius,
+            )
+
+    tris = GeomTriangles(Geom.UHStatic)
+    c = slices + 1
+    for i in range(stacks):
+        for j in range(slices):
+            p0 = i * c + j
+            tris.addVertices(p0,     p0 + c,     p0 + 1)
+            tris.addVertices(p0 + 1, p0 + c,     p0 + c + 1)
+
+    geom = Geom(vdata)
+    geom.addPrimitive(tris)
+    gn = GeomNode('sp')
+    gn.addGeom(geom)
+    np = NodePath(gn)
+    np.setColor(r, g, b, 1.0)
+    return np
+
+
+def _fetch_all_systems():
+    try:
+        from world import database as db
+        conn = db.get_connection()
+        try:
+            rows = conn.execute(
+                "SELECT system_id, name, rel_x, rel_y, rel_z "
+                "FROM solar_systems"
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"[MINIMAP] DB-Fehler: {e}")
+        return []
+
+
+class Minimap:
+    RANGE     = 8_000.0
+    TILT_DEG  = 20
+    SYS_SCALE = 100
+    PLY_SCALE = 70
+
+    DR_L, DR_R = 0.74, 0.99
+    DR_B, DR_T = 0.74, 0.99
+
+    DB_REFRESH_INTERVAL = 120
 
     def __init__(self, player_ship, world_manager):
-        super().__init__(parent=camera.ui)
-        self.player_ship   = player_ship
-        self.world_manager = world_manager
-        self._dots         = {}    # system_id -> {'dot', 'label', 'system'}
-        self._known_ids    = set()
-        self._visible      = True
-        self._build_ui()
+        self.player       = player_ship
+        self.world        = world_manager
+        self._dots        = {}
+        self._all_systems = []
+        self._visible     = True
+        self._ok          = False
+        self._frame_cnt   = 0
 
-    # ------------------------------------------------------------------ UI
-    def _build_ui(self):
-        cx, cy, s = self.CX, self.CY, self.SIZE
-        hs = s / 2
+        self._base = _get_base()
+        if self._base is None:
+            print("[MINIMAP] 'base' nicht verfügbar")
+            return
 
-        # Rand (leicht größer -> sichtbarer Rahmen)
-        self._border = Entity(
-            parent=camera.ui, model='quad',
-            color=color.rgba(30, 130, 220, 240),
-            scale=(s + 0.008, s + 0.008),
-            position=(cx, cy, 2.2),
+        # mm_root unter base.render erstellen
+        self._mm_root = self._base.render.attachNewNode(PandaNode('mm_root'))
+        self._mm_root.setLightOff()
+
+        # 1. Wir verstecken den Node standardmäßig für alle Kameras
+        self._mm_root.hide(BitMask32.allOn())
+        
+        # 2. Wir machen ihn EXKLUSIV für Kameras mit dem _MM_BIT sichtbar
+        self._mm_root.showThrough(_MM_BIT)
+
+        # 3. SICHERER FIX: Der Hauptkamera das _MM_BIT abziehen.
+        #    Das schützt das interne 'overall_bit' und verhindert den AssertionError!
+        if self._base.camNode:
+            current_mask = self._base.camNode.getCameraMask()
+            safe_mask = current_mask & ~_MM_BIT
+            self._base.camNode.setCameraMask(safe_mask)
+
+        self._ok = True
+        self._make_camera()
+        self._make_reference_rings()
+        self._make_player_marker()
+        self._make_hud()
+        self._refresh_systems()
+        print(f"[MINIMAP] OK – {len(self._all_systems)} Systeme geladen")
+
+    # ── Kamera ─────────────────────────────────────────────────────────────
+    def _make_camera(self):
+        half = self.RANGE
+        lens = OrthographicLens()
+        lens.setFilmSize(half * 2.1, half * 2.1)
+        lens.setNearFar(-half * 5, half * 5)
+
+        cam_node = P3DCamera('mm_cam')
+        cam_node.setLens(lens)
+        
+        # Minimap-Kamera bekommt das exklusive Bit zugewiesen
+        cam_node.setCameraMask(_MM_BIT)
+        
+        self._cam = self._mm_root.attachNewNode(cam_node)
+
+        dr = self._base.win.makeDisplayRegion(
+            self.DR_L, self.DR_R,
+            self.DR_B, self.DR_T,
         )
-        # Hintergrund
-        self._bg = Entity(
+        dr.setCamera(self._cam)
+        dr.setClearColorActive(True)
+        dr.setClearDepthActive(True)
+        dr.setClearColor((0.01, 0.03, 0.15, 1.0))
+        dr.setSort(20)
+        self._dr = dr
+
+    # ── Ringe ──────────────────────────────────────────────────────────────
+    def _make_reference_rings(self):
+        self._ring_root = self._mm_root.attachNewNode('mm_rings')
+        segs = 80
+        for frac, alpha in ((0.5, 0.55), (1.0, 0.85)):
+            r  = self.RANGE * frac
+            ls = LineSegs()
+            ls.setColor(0.2, 0.5, 1.0, alpha)
+            ls.setThickness(1.5)
+            for i in range(segs + 1):
+                a  = 2 * math.pi * i / segs
+                pt = (r * math.cos(a), r * math.sin(a), 0.0)
+                ls.moveTo(*pt) if i == 0 else ls.drawTo(*pt)
+            self._ring_root.attachNewNode(ls.create())
+        r   = self.RANGE
+        ls2 = LineSegs()
+        ls2.setColor(0.2, 0.35, 0.7, 0.4)
+        ls2.moveTo(-r, 0, 0); ls2.drawTo(r, 0, 0)
+        ls2.moveTo(0, -r, 0); ls2.drawTo(0, r, 0)
+        self._ring_root.attachNewNode(ls2.create())
+
+    # ── Spieler-Marker ─────────────────────────────────────────────────────
+    def _make_player_marker(self):
+        self._ply_root = self._mm_root.attachNewNode('mm_player')
+        body = _make_sphere(self.PLY_SCALE, 0.0, 0.9, 1.0)
+        body.reparentTo(self._ply_root)
+        tip = _make_sphere(1.0, 0.0, 1.0, 0.7)
+        tip.setScale(self.PLY_SCALE * 0.3,
+                     self.PLY_SCALE * 2.5,
+                     self.PLY_SCALE * 0.3)
+        tip.setPos(0, self.PLY_SCALE * 1.5, 0)
+        tip.reparentTo(self._ply_root)
+
+    # ── HUD ────────────────────────────────────────────────────────────────
+    def _make_hud(self):
+        ar  = window.aspect_ratio or 1.778
+        sx  = ((self.DR_L + self.DR_R) / 2 - 0.5) * ar
+        sy  =  (self.DR_B + self.DR_T) / 2 - 0.5
+        hx  = ((self.DR_R - self.DR_L) / 2) * ar
+        hy  =  (self.DR_T - self.DR_B) / 2
+
+        self._frame = Entity(
             parent=camera.ui, model='quad',
-            color=color.rgba(0, 5, 20, 210),
-            scale=(s, s),
-            position=(cx, cy, 2.0),
+            color=color.rgba(20, 90, 200, 100),
+            scale=(hx * 2 + 0.012, hy * 2 + 0.012),
+            position=(sx, sy, 2.5),
         )
-        # Fadenkreuz H
-        self._ch = Entity(
-            parent=camera.ui, model='quad',
-            color=color.rgba(40, 100, 180, 80),
-            scale=(s * 0.90, 0.0016),
-            position=(cx, cy, 1.8),
-        )
-        # Fadenkreuz V
-        self._cv = Entity(
-            parent=camera.ui, model='quad',
-            color=color.rgba(40, 100, 180, 80),
-            scale=(0.0016, s * 0.90),
-            position=(cx, cy, 1.8),
-        )
-        # Titel
         self._title = Text(
             parent=camera.ui,
-            text='SEKTOR-ÜBERSICHT  [TAB]',
-            position=(cx - hs + 0.005, cy + hs - 0.013),
-            scale=0.50,
-            color=color.rgba(80, 180, 255, 210),
+            text='MINIMAP  [TAB]',
+            position=(sx - hx + 0.005, sy + hy - 0.013),
+            scale=0.48,
+            color=color.rgba(80, 180, 255, 220),
         )
-        # Spieler-Körper
-        self._pm_body = Entity(
-            parent=camera.ui, model='quad',
-            color=color.rgba(0, 230, 255, 255),
-            scale=(0.011, 0.016),
-            position=(cx, cy, 0.5),
-        )
-        # Spieler-Richtungsstrahl (zeigt immer nach oben = Vorwärts)
-        self._pm_ray = Entity(
-            parent=camera.ui, model='quad',
-            color=color.rgba(0, 230, 255, 160),
-            scale=(0.0025, s * 0.065),
-            position=(cx, cy + s * 0.032, 0.5),
-        )
-        # Koordinaten / Heading
         self._coords = Text(
-            parent=camera.ui,
-            text='',
-            position=(cx - hs + 0.005, cy - hs + 0.010),
-            scale=0.50,
+            parent=camera.ui, text='',
+            position=(sx - hx + 0.005, sy - hy + 0.010),
+            scale=0.44,
             color=color.rgba(130, 200, 255, 200),
         )
+        self._hud_elems = [self._frame, self._title, self._coords]
 
-        self._static = [
-            self._border, self._bg, self._ch, self._cv,
-            self._title, self._pm_body, self._pm_ray, self._coords,
-        ]
+    # ── DB ─────────────────────────────────────────────────────────────────
+    def _refresh_systems(self):
+        self._all_systems = _fetch_all_systems()
+        self._sync_dots(self._all_systems)
 
-    # ------------------------------------------------------------------ Mathe
-    def _world_to_map(self, wx, wz):
-        """
-        Weltposition (wx, wz) -> Bildschirmkoordinaten (Heading-Up).
-        Y-Rotation des Spielers wird herausgerechnet: Forward = Oben.
-        """
-        px, _, pz = self.player_ship.position
-        dx, dz = wx - px, wz - pz
-        h = math.radians(self.player_ship.rotation_y)
-        rx =  dx * math.cos(h) + dz * math.sin(h)
-        ry = -dx * math.sin(h) + dz * math.cos(h)
-        scale = (self.SIZE / 2.0) / self.RANGE
-        return self.CX + rx * scale, self.CY + ry * scale
-
-    def _in_bounds(self, mx, my):
-        hs = self.SIZE / 2.0 * 0.94
-        return abs(mx - self.CX) <= hs and abs(my - self.CY) <= hs
-
-    # ------------------------------------------------------------------ Toggle
-    def toggle(self):
-        self._visible = not self._visible
-        for e in self._static:
-            e.enabled = self._visible
-        for entry in self._dots.values():
-            entry['dot'].enabled   = self._visible
-            entry['label'].enabled = self._visible
-
-    # ------------------------------------------------------------------ Dots
+    # ── Dots ───────────────────────────────────────────────────────────────
     def _sync_dots(self, systems):
-        """Erstellt fehlende und entfernt veraltete System-Dots."""
         new_ids = {s['system_id'] for s in systems if s.get('system_id') is not None}
 
         for sid in list(self._dots):
             if sid not in new_ids:
-                destroy(self._dots[sid]['dot'])
-                destroy(self._dots[sid]['label'])
+                self._dots[sid].removeNode()
                 del self._dots[sid]
 
         for sys in systems:
@@ -142,54 +247,82 @@ class Minimap(Entity):
             if sid is None or sid in self._dots:
                 continue
 
-            dot = Entity(
-                parent=camera.ui, model='quad',
-                color=color.rgba(255, 215, 0, 220),
-                scale=0.010,
-                position=(self.CX, self.CY, 0.4),
-                enabled=self._visible,
-            )
-            label = Text(
-                parent=camera.ui,
-                text=sys.get('name', '?')[:14],
-                position=(self.CX + 0.013, self.CY),
-                scale=0.46,
-                color=color.rgba(255, 240, 130, 185),
-                enabled=self._visible,
-            )
-            self._dots[sid] = {'dot': dot, 'label': label, 'system': sys}
+            root = self._mm_root.attachNewNode(f'mm_sys_{sid}')
 
-        self._known_ids = new_ids
+            sphere = _make_sphere(self.SYS_SCALE, 1.0, 0.85, 0.0)
+            sphere.reparentTo(root)
 
-    def _update_dot_positions(self, systems):
-        by_id = {s['system_id']: s for s in systems if s.get('system_id')}
-        for sid, entry in self._dots.items():
-            sys_data = by_id.get(sid, entry['system'])
-            mx, my = self._world_to_map(
-                sys_data.get('rel_x', 0),
-                sys_data.get('rel_z', 0),
-            )
-            vis = self._in_bounds(mx, my) and self._visible
-            entry['dot'].position   = (mx, my, 0.4)
-            entry['dot'].enabled    = vis
-            entry['label'].position = (mx + 0.013, my - 0.003)
-            entry['label'].enabled  = vis
+            tn = TextNode(f'lbl_{sid}')
+            tn.setText(sys.get('name', '?')[:14])
+            tn.setTextColor(1.0, 0.95, 0.5, 1.0)
+            tn.setAlign(TextNode.ALeft)
+            lbl = root.attachNewNode(tn)
+            lbl.setScale(60)
+            lbl.setPos(self.SYS_SCALE * 1.2, 0, 0)
+            lbl.setBillboardPointEye(self._cam, 0.0, False)   # ← explizite MM-Kamera!
 
-    # ------------------------------------------------------------------ Loop
+            self._dots[sid] = root
+
+    def _place_dots(self):
+        px = self.player.position.x
+        py = self.player.position.y
+        pz = self.player.position.z
+
+        for sys in self._all_systems:
+            sid = sys.get('system_id')
+            if sid not in self._dots:
+                continue
+            dx = sys.get('rel_x', 0) - px
+            dy = sys.get('rel_y', 0) - py
+            dz = sys.get('rel_z', 0) - pz
+            rx, ry, rz = _u2p(dx, dy, dz)
+            self._dots[sid].setPos(rx, ry, rz)
+
+    # ── Toggle ─────────────────────────────────────────────────────────────
+    def toggle(self):
+        if not self._ok:
+            return
+        self._visible = not self._visible
+        self._dr.setActive(self._visible)
+        for e in self._hud_elems:
+            e.enabled = self._visible
+        if self._visible:
+            self._mm_root.showThrough(_MM_BIT)
+        else:
+            self._mm_root.hide(BitMask32.allOn())
+
+    # ── Update ─────────────────────────────────────────────────────────────
     def update(self):
-        if not self._visible or not self.player_ship:
+        if not self._ok or not self._visible or not self.player:
             return
 
-        systems = getattr(self.world_manager, 'solar_systems', [])
-        current_ids = {s['system_id'] for s in systems if s.get('system_id')}
-        if current_ids != self._known_ids:
-            self._sync_dots(systems)
+        self._frame_cnt += 1
+        if self._frame_cnt % self.DB_REFRESH_INTERVAL == 0:
+            self._refresh_systems()
 
-        self._update_dot_positions(systems)
+        px  = self.player.position.x
+        py  = self.player.position.y
+        pz  = self.player.position.z
+        hdg = self.player.rotation_y
 
-        px, py, pz = self.player_ship.position
-        hdg = self.player_ship.rotation_y % 360
+        self._ply_root.setPos(0, 0, 0)
+        self._ply_root.setHpr(-hdg, 0, 0)
+        self._ring_root.setPos(0, 0, 0)
+
+        tilt  = math.radians(self.TILT_DEG)
+        dist  = self.RANGE * 1.6
+        h_rad = math.radians(-hdg)
+
+        self._cam.setPos(
+             math.sin(h_rad) * dist * math.sin(tilt),
+            -math.cos(h_rad) * dist * math.sin(tilt),
+             dist * math.cos(tilt),
+        )
+        self._cam.setHpr(-hdg, -(90 - self.TILT_DEG), 0)
+
+        self._place_dots()
+
         self._coords.text = (
             f'X:{px:7.0f}  Y:{py:5.0f}  Z:{pz:7.0f}\n'
-            f'HDG: {hdg:6.1f}\u00b0'
+            f'HDG: {hdg % 360:6.1f}°'
         )
