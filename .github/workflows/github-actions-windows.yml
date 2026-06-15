@@ -4,6 +4,9 @@ name: Spiel manuell bauen
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build-Bindoj:
     runs-on: windows-latest
