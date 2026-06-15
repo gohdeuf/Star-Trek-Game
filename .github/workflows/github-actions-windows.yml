@@ -4,6 +4,10 @@ name: Spiel manuell bauen
 on:
   workflow_dispatch:
 
+# Diese Variable zwingt GitHub Actions, Node.js 24 zu nutzen und behebt die Warnung
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 permissions:
   contents: read
 
@@ -14,7 +18,7 @@ jobs:
     # Hier werden die minimalen Rechte für diesen Job festgelegt
     permissions:
       contents: read
-
+      
     steps:
       - name: Code herunterladen
         uses: actions/checkout@v4
