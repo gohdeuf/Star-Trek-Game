@@ -36,5 +36,5 @@ jobs:
       - name: Fertiges Spiel speichern
         uses: actions/upload-artifact@v4
         with:
-          name: Spiel-Bindoj-Build
+          name: Star-Trek-Game
           path: build/win_amd64/

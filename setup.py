@@ -4,22 +4,26 @@ setup(
     name="Bindoj",
     options={
         "build_apps": {
-            # HIER DIE LÖSUNG: Nur für Windows (64-Bit) bauen
             "platforms": ["win_amd64"],
             
-            # Deine Hauptdatei, die das Spiel startet
+            # Hier wird der Name der ausführbaren Datei festgelegt (erzeugt Bindoj.exe)
             "gui_apps": {
                 "Bindoj": "main.py",
             },
-            # Erzwingt das Einpacken der Grafik- und Soundtreiber
+            
+            # WICHTIG: Diese Module müssen für die Windows-.exe geladen werden
+            "include_modules": [
+                "panda3d",
+                "direct"
+            ],
+            
             "plugins": [
                 "pandagl",
                 "p3openal_audio",
             ],
-            # Bindet alle Bibliotheken aus deiner requirements.txt ein
+            
             "requirements_path": "requirements.txt",
             
-            # Importiert all deine spezifischen Spiele-Ordner
             "include_patterns": [
                 "world/**/*",
                 "models/**/*",
@@ -31,6 +35,9 @@ setup(
                 "**/*.wav",
                 "**/*.ursina"
             ],
+            
+            # Verhindert Fehler mit unpassenden, vorkompilierten Binärdateien
+            "use_optimized_wheels": False
         }
     }
 )
