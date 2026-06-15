@@ -28,7 +28,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install setuptools panda3d
+          pip install setuptools panda3d deploy-libs
 
       - name: Spiel mit Panda3D-Build bauen
         run: python setup.py build_apps
