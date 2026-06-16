@@ -154,7 +154,11 @@ class Minimap:
         cam_node.setCameraMask(_MM_BIT)
         
         self._cam = self._mm_root.attachNewNode(cam_node)
-
+        tilt = math.radians(self.TILT_DEG)
+        dist = self.RANGE * 1.6
+        self._cam.setPos(0.0, -dist * math.sin(tilt), dist * math.cos(tilt))
+        self._cam.setHpr(0.0, -(90.0 - self.TILT_DEG), 0.0)
+        
         dr = self._base.win.makeDisplayRegion(
             self.DR_L, self.DR_R,
             self.DR_B, self.DR_T,
@@ -249,8 +253,7 @@ class Minimap:
 
             root = self._mm_root.attachNewNode(f'mm_sys_{sid}')
 
-            sphere = _make_sphere(self.SYS_SCALE, 1.0, 0.85, 0.0)
-            sphere.reparentTo(root)
+
 
             tn = TextNode(f'lbl_{sid}')
             tn.setText(sys.get('name', '?')[:14])
@@ -309,16 +312,7 @@ class Minimap:
         self._ply_root.setHpr(-hdg, 0, 0)
         self._ring_root.setPos(0, 0, 0)
 
-        tilt  = math.radians(self.TILT_DEG)
-        dist  = self.RANGE * 1.6
-        h_rad = math.radians(-hdg)
 
-        self._cam.setPos(
-             math.sin(h_rad) * dist * math.sin(tilt),
-            -math.cos(h_rad) * dist * math.sin(tilt),
-             dist * math.cos(tilt),
-        )
-        self._cam.setHpr(-hdg, -(90 - self.TILT_DEG), 0)
 
         self._place_dots()
 

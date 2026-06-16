@@ -23,7 +23,7 @@ CAMERA_FREE_SPEED: float = 10        # Wie schnell fliegt die freie Kamera? (NEU
 TOGGLE_CAMERA_KEY: str = "f10"       # Die Taste zum Umschalten (NEU)
 
 # Schiffe-Standard (Scale, Speed etc.)
-SHIP_DEFAULT_SPEED: float = 15  # Einheiten/Sekunde
+SHIP_DEFAULT_SPEED: float = 150  # Einheiten/Sekunde
 SHIP_DEFAULT_ROTATION_SPEED: float = 100  # Grad/Sekunde
 
 # DEBUG-Modus (für Tests)
