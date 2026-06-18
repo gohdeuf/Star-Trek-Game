@@ -1,450 +1,332 @@
 """
-ui/minimap.py – Galaxy Map
-===========================
-Tab: Vollbild-Galaxie-Karte öffnen / schließen
-  Scrollrad          → Zoom rein/raus
-  Linke Maustaste    → Karte schwenken
-  Tab / Escape       → Schließen
+ui/minimap.py – Galaxy Map (2D Overlay)
+=========================================
+Keine eigene Panda3D-Kamera mehr.
+Alles läuft als Ursina camera.ui-Entities → garantiert sichtbar.
 
-Koordinaten (Ursina → Panda3D Draufsicht):
-  Ursina X  →  Panda3D X  (rechts  = rechts)
-  Ursina Z  →  Panda3D Y  (vorwärts = oben auf der Karte)
-  Kamera schaut senkrecht nach unten: HPR(0, -90, 0)
+Tab : Karte öffnen / schließen
+Scroll : Zoom
+LMB-Drag : Schwenken
 """
 
 import math
-from ursina import Entity, Text, camera, color, window, mouse
-from panda3d.core import (
-    Camera as P3DCamera,
-    OrthographicLens,
-    PandaNode,
-    BitMask32,
-    TextNode,
-    LineSegs,
-)
-import builtins
+from ursina import Entity, Text, camera, color, window, mouse, destroy
 
-
-def _get_base():
-    return builtins.__dict__.get('base')
-
-_MM_BIT = BitMask32.bit(8)
-
-
-# ─── Datenbank-Helfer ────────────────────────────────────────────────────────
+# ─── DB-Helfer ───────────────────────────────────────────────────────────────
 
 def _load_systems():
     try:
         from world import database as db
         conn = db.get_connection()
         try:
-            rows = conn.execute(
+            return [dict(r) for r in conn.execute(
                 "SELECT system_id, name, rel_x, rel_y, rel_z FROM solar_systems"
-            ).fetchall()
-            return [dict(r) for r in rows]
+            ).fetchall()]
         finally:
             conn.close()
     except Exception as e:
-        print(f"[MAP] DB-Fehler: {e}")
+        print(f"[MAP] {e}")
         return []
 
 
-def _load_planets(system_id):
+def _load_planets(sid):
     try:
         import json
         from world import database as db
         conn = db.get_connection()
         try:
-            row = conn.execute(
-                "SELECT planets_data FROM solar_systems WHERE system_id=?",
-                (system_id,)
+            r = conn.execute(
+                "SELECT planets_data FROM solar_systems WHERE system_id=?", (sid,)
             ).fetchone()
-            if row:
-                return json.loads(row['planets_data'] or '[]')
+            return json.loads(r['planets_data'] or '[]') if r else []
         finally:
             conn.close()
-    except Exception as e:
-        print(f"[MAP] Planet-Ladefehler: {e}")
-    return []
+    except:
+        return []
 
 
-# ─── Controller-Entity (treibt update-Loop an) ───────────────────────────────
+# ─── Input / Update-Controller ───────────────────────────────────────────────
 
-class _MapController(Entity):
-    """
-    Winzige Entity, die ausschließlich Minimap.update() pro Frame aufruft
-    und Scroll-/Drag-Input verarbeitet, wenn die Karte geöffnet ist.
-    """
-
-    def __init__(self, galaxy_map):
+class _MapCtrl(Entity):
+    def __init__(self, m):
         super().__init__()
-        self._gm = galaxy_map
+        self._m = m
 
     def input(self, key):
-        if not self._gm._active:
+        if not self._m._active:
             return
-        if key == 'scroll up':
-            self._gm._apply_zoom(0.80)    # rein
-        elif key == 'scroll down':
-            self._gm._apply_zoom(1.25)    # raus
+        if   key == 'scroll up':   self._m._fh = max(self._m.FH_MIN, self._m._fh * 0.80)
+        elif key == 'scroll down': self._m._fh = min(self._m.FH_MAX, self._m._fh * 1.25)
 
     def update(self):
-        # Maus-Drag für Schwenken (nur wenn Karte offen)
-        if self._gm._active and mouse.left:
+        # LMB-Drag → Karte schwenken
+        if self._m._active and mouse.left:
             vx, vy = mouse.velocity[0], mouse.velocity[1]
-            if abs(vx) > 0 or abs(vy) > 0:
-                ar  = window.aspect_ratio or 1.778
-                spd = self._gm._film_h   # skaliert mit Zoom
-                self._gm._pan_x -= vx * spd * ar
-                self._gm._pan_z -= vy * spd
-
-        # Haupt-Update der Karte
-        self._gm.update()
+            if vx or vy:
+                ar = window.aspect_ratio or 1.778
+                self._m._pan_x -= vx * self._m._fh * ar
+                self._m._pan_z -= vy * self._m._fh
+        self._m.update()
 
 
-# ─── Galaxie-Karte ───────────────────────────────────────────────────────────
+# ─── Galaxie-Karte ────────────────────────────────────────────────────────────
 
 class Minimap:
     """
-    Interaktive Vollbild-Sternenkarte.
+    Vollbild-Sternenkarte als 2D camera.ui-Overlay.
 
-    Aufbau:
-    - Separater Panda3D-Display-Region (Vollbild, Sort 50, deckend)
-    - Eigene orthographische Kamera mit _MM_BIT-Maske
-    - Alle Geometrien als LineSegs (Draw-Mask-sicher)
-    - Sternenlabels immer sichtbar, skalieren adaptiv mit Zoom
-    - Planeten werden lazy geladen und ab PLANET_THRESHOLD angezeigt
+    Koordinaten:
+      Ursina X  →  screen X  (rechts = rechts)
+      Ursina Z  →  screen Y  (Ursina-vorwärts = Karte-oben)
+
+    Kein Panda3D-Kamera-Aufwand, keine BitMasks, keine Display-Regions.
     """
 
-    FILM_DEFAULT =  15_000.0   # Start-Halbhöhe in Welteinheiten
-    FILM_MIN     =     120.0   # maximaler Zoom-in
-    FILM_MAX     = 100_000.0   # maximaler Zoom-out
-
-    PLANET_THRESHOLD = 1_200.0  # Planeten anzeigen wenn _film_h < Wert
-
-    STAR_R   =  70.0   # Radius des Sternkreises (Welteinheiten)
-    LBL_BASE = 100.0   # Basis-Textskalierung
-
-    DB_REFRESH = 240   # Frames zwischen DB-Neulesungen
+    FH_DEF  =  3_000.0   # Start: ~3 Sektoren sichtbar
+    FH_MIN  =     60.0   # maximaler Zoom-in
+    FH_MAX  = 80_000.0   # maximaler Zoom-out
+    PLN_THR =    800.0   # Planeten zeigen wenn _fh < dieser Wert
+    DBREF   =    240     # Frames zwischen DB-Neuladen
 
     def __init__(self, player_ship, world_manager):
-        self.player = player_ship
-        self.world  = world_manager
+        self.player  = player_ship
+        self.world   = world_manager
+        self._active = False
+        self._fh     = self.FH_DEF   # aktueller Zoom (Welt-Halb-Höhe)
+        self._pan_x  = 0.0
+        self._pan_z  = 0.0
+        self._systems    = []
+        self._star_ents  = {}   # sid → dot Entity
+        self._lbl_ents   = {}   # sid → Text
+        self._planet_ents= {}   # sid → [Entity, ...]  (lazy erstellt)
+        self._frame      = 0
 
-        self._dots    = {}   # system_id → root NodePath
-        self._lbls    = {}   # system_id → Label-NodePath
-        self._pnodes  = {}   # system_id → [NodePath, ...] | None (= noch nicht geladen)
-        self._systems = []
-
-        self._active    = False
-        self._ok        = False
-        self._frame_cnt = 0
-
-        self._film_h = self.FILM_DEFAULT
-        self._pan_x  = 0.0   # Kamera-Mittelpunkt Ursina-X
-        self._pan_z  = 0.0   # Kamera-Mittelpunkt Ursina-Z (= Panda3D Y)
-
-        self._base = _get_base()
-        if self._base is None:
-            print("[MAP] 'base' nicht verfügbar")
-            return
-
-        # Wurzel-Knoten für alle 3D-Kartenobjekte
-        self._root = self._base.render.attachNewNode(PandaNode('galaxy_root'))
-        self._root.setLightOff()
-        self._root.hide(BitMask32.allOn())
-        self._root.showThrough(_MM_BIT)
-
-        # Hauptkamera: _MM_BIT entfernen → sieht keine Kartenobjekte
-        if self._base.camNode:
-            cur = self._base.camNode.getCameraMask()
-            self._base.camNode.setCameraMask(cur & ~_MM_BIT)
-
-        self._ok = True
-        self._setup_camera()
-        self._make_player_marker()
-        self._make_hud()
-        self._reload_systems()
-
-        self._ctrl = _MapController(self)
-        print(f"[MAP] Galaxie-Karte bereit – {len(self._systems)} Systeme | Tab zum Öffnen")
-
-    # ── Kamera ───────────────────────────────────────────────────────────────
-
-    def _setup_camera(self):
-        self._lens = OrthographicLens()
+        # ── Hintergrund-Overlay ──────────────────────────────────────────────
         ar = window.aspect_ratio or 1.778
-        self._lens.setFilmSize(self._film_h * 2 * ar, self._film_h * 2)
-        self._lens.setNearFar(-1_000_000, 1_000_000)
+        self._bg = Entity(
+            parent=camera.ui, model='quad',
+            color=color.rgba(2, 5, 20, 252),
+            scale=(ar, 1), z=0.9,
+            enabled=False,
+        )
 
-        cam_node = P3DCamera('galaxy_cam')
-        cam_node.setLens(self._lens)
-        cam_node.setCameraMask(_MM_BIT)
+        # ── Spieler-Marker ───────────────────────────────────────────────────
+        self._ply = Entity(
+            parent=camera.ui, model='quad',
+            color=color.cyan, scale=0.018,
+            z=0.0, enabled=False,
+        )
+        self._ply_lbl = Text(
+            parent=camera.ui, text='◀ Spieler',
+            color=color.rgba(50, 255, 255, 220),
+            scale=0.6, z=0.0, enabled=False,
+        )
 
-        self._cam = self._root.attachNewNode(cam_node)
-        self._cam.setPos(0.0, 0.0, 50_000.0)
-        # Senkrecht nach unten schauen; Panda3D +Y = Karten-oben = Ursina +Z
-        self._cam.setHpr(0.0, -90.0, 0.0)
-
-        self._dr = self._base.win.makeDisplayRegion(0.0, 1.0, 0.0, 1.0)
-        self._dr.setCamera(self._cam)
-        self._dr.setClearColorActive(True)
-        self._dr.setClearDepthActive(True)
-        self._dr.setClearColor((0.01, 0.02, 0.08, 1.0))
-        self._dr.setSort(50)    # über der Hauptszene (Sort 0)
-        self._dr.setActive(False)
-
-    def _apply_zoom(self, factor):
-        self._film_h = max(self.FILM_MIN, min(self.FILM_MAX, self._film_h * factor))
-        ar = window.aspect_ratio or 1.778
-        self._lens.setFilmSize(self._film_h * 2 * ar, self._film_h * 2)
-        self._rescale_labels()
-
-    # ── Spieler-Marker ───────────────────────────────────────────────────────
-
-    def _make_player_marker(self):
-        self._ply = self._root.attachNewNode('map_player')
-        r = self.STAR_R * 1.3
-        ls = LineSegs()
-        ls.setColor(0.2, 1.0, 1.0, 1.0)    # cyan
-        ls.setThickness(3.0)
-        # Pfeil: Spitze in +Y (Ursina vorwärts = Karte-oben)
-        ls.moveTo(0, r * 1.6, 0)
-        ls.drawTo(-r * 0.7, -r * 0.7, 0)
-        ls.drawTo(r * 0.7, -r * 0.7, 0)
-        ls.drawTo(0, r * 1.6, 0)
-        self._ply.attachNewNode(ls.create())
-
-        tn = TextNode('you')
-        tn.setText('◀ Spieler')
-        tn.setTextColor(0.2, 1.0, 1.0, 1.0)
-        lbl = self._ply.attachNewNode(tn)
-        lbl.setScale(self.LBL_BASE)
-        lbl.setPos(r * 1.8, 0, 1)
-        lbl.setP(-90)   # flach liegend → von Draufsicht lesbar
-        self._ply_lbl = lbl
-
-    # ── HUD ──────────────────────────────────────────────────────────────────
-
-    def _make_hud(self):
+        # ── HUD-Texte ────────────────────────────────────────────────────────
         self._hint = Text(
             parent=camera.ui, enabled=False,
-            text='GALAXIE-KARTE  ·  Scrollrad: Zoom  ·  Linke Maustaste: Schwenken  ·  Tab: Schließen',
-            position=(0.0, 0.47), origin=(0, 0),
-            scale=0.44, color=color.rgba(100, 190, 255, 210),
+            text='GALAXIE-KARTE  ·  Scroll: Zoom  ·  LMB: Schwenken  ·  Tab: Schließen',
+            position=(0, 0.46), origin=(0, 0),
+            scale=0.55, color=color.rgba(100, 190, 255, 210), z=-0.5,
         )
         self._info = Text(
-            parent=camera.ui, enabled=False, text='',
-            position=(-0.85, -0.47), scale=0.42,
-            color=color.rgba(130, 200, 255, 180),
+            parent=camera.ui, text='', enabled=False,
+            position=(-0.85, -0.46), scale=0.45,
+            color=color.rgba(130, 200, 255, 180), z=-0.5,
         )
-        self._hud = [self._hint, self._info]
+        self._hud_elems = [self._bg, self._ply, self._ply_lbl, self._hint, self._info]
 
-    # ── Systemliste ──────────────────────────────────────────────────────────
+        self._reload()
+        self._ctrl = _MapCtrl(self)
+        print(f"[MAP] Bereit – {len(self._systems)} Systeme | Tab zum Öffnen")
 
-    def _reload_systems(self):
+    # ── Koordinaten-Helfer ────────────────────────────────────────────────────
+
+    def _to_ui(self, wx, wz):
+        """Weltkoordinaten → camera.ui (x, y)."""
+        s = 0.5 / self._fh   # 0.5 = halbe Bildschirmhöhe
+        return (wx - self._pan_x) * s, (wz - self._pan_z) * s
+
+    def _dot_px(self):
+        """Dot-Größe in screen-units: immer ~12 px bei 1080p."""
+        return 12.0 / (window.size[1] or 1080)
+
+    # ── Systemliste ───────────────────────────────────────────────────────────
+
+    def _reload(self):
         self._systems = _load_systems()
-        self._sync_dots()
+        self._sync()
 
-    def _sync_dots(self):
-        cur_ids = {s['system_id'] for s in self._systems if s.get('system_id')}
-        for sid in list(self._dots):
-            if sid not in cur_ids:
-                self._dots[sid].removeNode()
-                del self._dots[sid]
-                self._lbls.pop(sid, None)
-                self._pnodes.pop(sid, None)
-        for sys in self._systems:
-            sid = sys.get('system_id')
-            if sid and sid not in self._dots:
-                self._add_star(sys)
+    def _sync(self):
+        cur = {s['system_id'] for s in self._systems if s.get('system_id')}
 
-    # ── Stern-Geometrie ──────────────────────────────────────────────────────
+        # Veraltete Einträge entfernen
+        for sid in list(self._star_ents):
+            if sid not in cur:
+                destroy(self._star_ents.pop(sid))
+                if sid in self._lbl_ents:
+                    destroy(self._lbl_ents.pop(sid))
+                for e in self._planet_ents.pop(sid, []):
+                    destroy(e)
 
-    def _add_star(self, sys_data):
-        sid  = sys_data['system_id']
-        name = sys_data.get('name', '?')
-        r    = self.STAR_R
+        # Neue Systeme hinzufügen
+        for s in self._systems:
+            sid = s.get('system_id')
+            if sid and sid not in self._star_ents:
+                self._add_star(sid, s.get('name', '?'))
 
-        root = self._root.attachNewNode(f'gm_{sid}')
+    def _add_star(self, sid, name):
+        """Erstellt Dot + Label für ein Sonnensystem (versteckt bis Karte offen)."""
+        dot = Entity(
+            parent=camera.ui, model='quad',
+            color=color.rgba(255, 220, 50, 230),
+            scale=self._dot_px(),
+            z=0.0, enabled=self._active,
+        )
+        lbl = Text(
+            parent=camera.ui,
+            text=name,
+            color=color.rgba(255, 240, 100, 220),
+            scale=0.55, z=-0.1,
+            enabled=self._active,
+        )
+        self._star_ents[sid]  = dot
+        self._lbl_ents[sid]   = lbl
+        self._planet_ents[sid] = []
 
-        # Kreis + Kreuz
-        ls = LineSegs()
-        ls.setColor(1.0, 0.88, 0.2, 1.0)
-        ls.setThickness(2.5)
-        for i in range(15):
-            a  = 2 * math.pi * i / 14
-            pt = (r * math.cos(a), r * math.sin(a), 0.0)
-            ls.moveTo(*pt) if i == 0 else ls.drawTo(*pt)
-        cr = r * 0.6
-        ls.moveTo(-cr, 0, 0); ls.drawTo(cr, 0, 0)
-        ls.moveTo(0, -cr, 0); ls.drawTo(0, cr, 0)
-        root.attachNewNode(ls.create())
+    # ── Planeten ──────────────────────────────────────────────────────────────
 
-        # Name-Label (immer sichtbar)
-        tn = TextNode('lbl')
-        tn.setText(name)
-        tn.setTextColor(1.0, 0.95, 0.4, 1.0)
-        tn.setAlign(TextNode.ALeft)
-        lbl = root.attachNewNode(tn)
-        lbl.setScale(self.LBL_BASE)
-        lbl.setPos(r * 1.5, 0, 1.0)
-        lbl.setP(-90)   # flach → von oben lesbar
-
-        self._dots[sid]   = root
-        self._lbls[sid]   = lbl
-        self._pnodes[sid] = None   # Planeten lazy laden
-
-        # Sofort platzieren
-        root.setPos(sys_data.get('rel_x', 0), sys_data.get('rel_z', 0), 0.0)
-
-    # ── Planeten-Geometrie (lazy) ─────────────────────────────────────────────
-
-    def _build_planets(self, sid):
-        """Erstellt Orbit-Ringe + Planet-Punkte + Labels für ein System."""
-        root = self._dots.get(sid)
-        if root is None:
-            return
-        nodes = []
+    def _build_planets(self, sid, star_wx, star_wz):
+        """Lazy: Erstellt Planet-Dots für ein System."""
+        for e in self._planet_ents.get(sid, []):
+            destroy(e)
+        ents = []
         for p in _load_planets(sid):
-            orb_r = p.get('orbit_radius', 0)
+            orb   = p.get('orbit_radius', 0)
             angle = math.radians(p.get('orbit_angle', 0))
-            px_l  = orb_r * math.cos(angle)
-            py_l  = orb_r * math.sin(angle)
+            pwx   = star_wx + orb * math.cos(angle)
+            pwz   = star_wz + orb * math.sin(angle)
+            ux, uz = self._to_ui(pwx, pwz)
 
-            # Orbit-Ring (XY-Ebene in Panda3D = horizontale Karte-Ebene)
-            ls_o = LineSegs()
-            ls_o.setColor(0.25, 0.45, 0.85, 0.5)
-            ls_o.setThickness(1.0)
-            for i in range(49):
-                a  = 2 * math.pi * i / 48
-                pt = (orb_r * math.cos(a), orb_r * math.sin(a), 0.2)
-                ls_o.moveTo(*pt) if i == 0 else ls_o.drawTo(*pt)
-            np_o = root.attachNewNode(ls_o.create())
-            np_o.hide()
-            nodes.append(np_o)
+            dot = Entity(
+                parent=camera.ui, model='quad',
+                color=color.rgba(140, 200, 255, 210),
+                scale=self._dot_px() * 0.55,
+                position=(ux, uz), z=-0.1,
+            )
+            lbl = Text(
+                parent=camera.ui,
+                text=p.get('name', '?')[:12],
+                color=color.rgba(140, 200, 255, 180),
+                scale=0.38, z=-0.2,
+                x=ux + self._dot_px() * 1.4, y=uz,
+            )
+            ents.extend([dot, lbl])
+        self._planet_ents[sid] = ents
 
-            # Planet-Punkt
-            dr   = max(orb_r * 0.04, 3.0)
-            ls_d = LineSegs()
-            ls_d.setColor(0.55, 0.8, 1.0, 1.0)
-            ls_d.setThickness(2.5)
-            for i in range(9):
-                a  = 2 * math.pi * i / 8
-                pt = (px_l + dr * math.cos(a), py_l + dr * math.sin(a), 0.6)
-                ls_d.moveTo(*pt) if i == 0 else ls_d.drawTo(*pt)
-            np_d = root.attachNewNode(ls_d.create())
-            np_d.hide()
-            nodes.append(np_d)
+    def _clear_all_planets(self):
+        for sid in list(self._planet_ents):
+            for e in self._planet_ents[sid]:
+                destroy(e)
+            self._planet_ents[sid] = []
 
-            # Planet-Label
-            ptn = TextNode('plbl')
-            ptn.setText(p.get('name', '?')[:12])
-            ptn.setTextColor(0.55, 0.8, 1.0, 1.0)
-            ptn.setAlign(TextNode.ALeft)
-            np_l = root.attachNewNode(ptn)
-            np_l.setScale(self.LBL_BASE * 0.28)
-            np_l.setPos(px_l + dr * 1.8, py_l, 1.0)
-            np_l.setP(-90)
-            np_l.hide()
-            nodes.append(np_l)
+    # ── Pro-Frame-Platzierung ─────────────────────────────────────────────────
 
-        self._pnodes[sid] = nodes
+    def _place_all(self):
+        dp = self._dot_px()
+        show_planets = self._fh < self.PLN_THR
 
-    # ── Pro-Frame-Updates ────────────────────────────────────────────────────
-
-    def _update_player(self):
-        if not self.player:
-            return
-        self._ply.setPos(self.player.position.x, self.player.position.z, 1.0)
-        self._ply.setH(-self.player.rotation_y)
-
-    def _update_planet_visibility(self):
-        show_mode = self._film_h < self.PLANET_THRESHOLD
-        for sys in self._systems:
-            sid = sys.get('system_id')
-            if sid not in self._dots:
+        for s in self._systems:
+            sid = s.get('system_id')
+            if sid not in self._star_ents:
                 continue
 
-            if not show_mode:
-                for np in (self._pnodes.get(sid) or []):
-                    np.hide()
-                continue
+            wx  = s.get('rel_x', 0)
+            wz  = s.get('rel_z', 0)
+            ux, uz = self._to_ui(wx, wz)
 
-            # Nur Systeme nah am Karten-Mittelpunkt zeigen
-            wx   = sys.get('rel_x', 0)
-            wz   = sys.get('rel_z', 0)
+            # Dot
+            dot = self._star_ents[sid]
+            dot.x = ux; dot.y = uz; dot.scale = dp
+
+            # Label: leicht rechts vom Dot
+            lbl = self._lbl_ents[sid]
+            lbl.x = ux + dp * 1.4; lbl.y = uz
+
+            # Planeten
             dist = math.sqrt((wx - self._pan_x)**2 + (wz - self._pan_z)**2)
-            if dist > self._film_h * 1.0:
-                for np in (self._pnodes.get(sid) or []):
-                    np.hide()
-                continue
+            if show_planets and dist < self._fh * 1.2:
+                if not self._planet_ents.get(sid):
+                    self._build_planets(sid, wx, wz)
+                else:
+                    # Positionen aktualisieren
+                    planets = _load_planets(sid)
+                    ents    = self._planet_ents[sid]
+                    for i, p in enumerate(planets):
+                        orb   = p.get('orbit_radius', 0)
+                        angle = math.radians(p.get('orbit_angle', 0))
+                        pwx   = wx + orb * math.cos(angle)
+                        pwz   = wz + orb * math.sin(angle)
+                        eux, euz = self._to_ui(pwx, pwz)
+                        j = i * 2
+                        if j < len(ents):
+                            ents[j].x = eux; ents[j].y = euz
+                            ents[j].scale = dp * 0.55
+                        if j + 1 < len(ents):
+                            ents[j+1].x = eux + dp * 1.4; ents[j+1].y = euz
+            else:
+                for e in self._planet_ents.get(sid, []):
+                    destroy(e)
+                self._planet_ents[sid] = []
 
-            # Lazy-Load der Planetengeometrie
-            if self._pnodes.get(sid) is None:
-                self._build_planets(sid)
+        # Spieler-Marker
+        if self.player:
+            px, pz = self.player.position.x, self.player.position.z
+            ux, uz = self._to_ui(px, pz)
+            self._ply.x = ux;   self._ply.y = uz
+            self._ply.scale = dp * 1.5
+            self._ply.rotation_z = -self.player.rotation_y
+            self._ply_lbl.x = ux + dp * 2.0
+            self._ply_lbl.y = uz
 
-            for np in (self._pnodes.get(sid) or []):
-                np.show()
-
-    def _rescale_labels(self):
-        """Labels immer in lesbarer Größe halten, egal wie weit gezoomt."""
-        scale = max(18.0, min(280.0, self._film_h * 0.009))
-        for lbl in self._lbls.values():
-            lbl.setScale(scale)
-        self._ply_lbl.setScale(scale)
-
-    # ── Toggle ───────────────────────────────────────────────────────────────
+    # ── Toggle ────────────────────────────────────────────────────────────────
 
     def toggle(self):
-        if not self._ok:
-            return
         self._active = not self._active
-        self._dr.setActive(self._active)
-        for e in self._hud:
+
+        for e in self._hud_elems:
             e.enabled = self._active
+        for dot in self._star_ents.values():
+            dot.enabled = self._active
+        for lbl in self._lbl_ents.values():
+            lbl.enabled = self._active
 
         if self._active:
-            self._root.showThrough(_MM_BIT)
-            # Beim Öffnen auf den Spieler zentrieren
             if self.player:
                 self._pan_x = self.player.position.x
                 self._pan_z = self.player.position.z
-            self._film_h = self.FILM_DEFAULT
-            ar = window.aspect_ratio or 1.778
-            self._lens.setFilmSize(self._film_h * 2 * ar, self._film_h * 2)
-            self._cam.setPos(self._pan_x, self._pan_z, 50_000.0)
-            self._reload_systems()
-            self._rescale_labels()
+            self._fh = self.FH_DEF
+            self._reload()
         else:
-            self._root.hide(BitMask32.allOn())
+            self._clear_all_planets()
 
-    # ── Haupt-Update (von _MapController aufgerufen) ─────────────────────────
+    # ── Update (von _MapCtrl aufgerufen) ──────────────────────────────────────
 
     def update(self):
-        if not self._ok or not self._active:
+        if not self._active:
             return
 
-        self._frame_cnt += 1
-        if self._frame_cnt % self.DB_REFRESH == 0:
-            self._reload_systems()
+        self._frame += 1
+        if self._frame % self.DBREF == 0:
+            self._reload()
 
-        # Kamera auf Schwenk-Position setzen
-        self._cam.setPos(self._pan_x, self._pan_z, 50_000.0)
+        self._place_all()
 
-        # Spieler-Marker
-        self._update_player()
-
-        # Planeten ein/ausblenden
-        self._update_planet_visibility()
-
-        # HUD-Text
         if self.player:
             px = self.player.position.x
             pz = self.player.position.z
-            zoom = self.FILM_DEFAULT / self._film_h
             self._info.text = (
                 f'Spieler ({px:,.0f} | {pz:,.0f})  ·  '
-                f'Karte-Zentrum ({self._pan_x:,.0f} | {self._pan_z:,.0f})  ·  '
-                f'Zoom {zoom:.1f}×  ·  {len(self._systems)} Systeme'
+                f'Zoom {self.FH_DEF / self._fh:.1f}×  ·  '
+                f'{len(self._systems)} Systeme'
             )
