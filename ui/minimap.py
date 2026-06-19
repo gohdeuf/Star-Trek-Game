@@ -1,6 +1,20 @@
 """
-ui/minimap.py – Galaxy Map (2D Overlay v3)
+ui/minimap.py – Galaxy Map (2D Overlay v4 – Höhen-Anzeige)
+=============================================================
 Tab: Öffnen/Schließen  |  Scroll: Zoom  |  LMB-Drag: Schwenken
+
+NEU in v4:
+  Da generator.py Sterne mit zufälliger rel_y (Höhe) im gesamten
+  Sektor-Würfel platziert (siehe world/generator.py: 
+  "rel_y = oy + rng.uniform(0, size)"), die Karte aber eine reine
+  X-Z-Draufsicht ist, fehlte bisher jede Information über den
+  Höhenunterschied zum Spieler.
+
+  Fix: Jeder Stern bekommt eine zusätzliche kleine Text-Anzeige
+  unter dem Namen:
+    ▲ 1.2k   (orange) → Stern liegt über dem Spieler (höheres Y)
+    ▼ 340    (blau)   → Stern liegt unter dem Spieler (niedrigeres Y)
+    ≈ Ebene  (grau)   → Höhenunterschied < 50 Einheiten (vernachlässigbar)
 """
 
 import math
@@ -71,6 +85,8 @@ class Minimap:
     PLN_THR =    800.0
     DBREF   =    240
 
+    DY_FLAT_THRESHOLD = 50.0   # |dy| unterhalb davon gilt als "gleiche Ebene"
+
     def __init__(self, player_ship, world_manager):
         self.player  = player_ship
         self.world   = world_manager
@@ -81,19 +97,17 @@ class Minimap:
         self._systems     = []
         self._star_ents   = {}
         self._lbl_ents    = {}
+        self._dy_ents     = {}   # sid → Text (Höhen-Anzeige)
         self._planet_ents = {}
         self._frame       = 0
 
         # ── Hintergrund ─────────────────────────────────────────────────────
-        # WICHTIG: color.rgba() in Ursina nimmt 0-1, NICHT 0-255.
-        # Verwende color.color(hue, sat, val, alpha) statt rgba().
-        # hue=220 (Blau), sat=0.7, val=0.06 = dunkles Marine-Blau
         self._bg = Entity(
             parent=camera.ui,
             model='quad',
-            color=color.hsv(220, 0.7, 0.06),  # dunkles Blau, opak
-            scale=(10, 6),   # groß genug für jeden Bildschirm
-            z=0.9,           # hinter allen anderen UI-Elementen
+            color=color.hsv(220, 0.7, 0.06),
+            scale=(10, 6),
+            z=0.9,
             enabled=False,
         )
 
@@ -133,16 +147,36 @@ class Minimap:
     # ── Helfer ────────────────────────────────────────────────────────────────
 
     def _to_ui(self, wx, wz):
-        """Weltkoordinaten → camera.ui (x, y). 0.5 = halbe Bildschirmhöhe."""
+        """Weltkoordinaten (X, Z) → camera.ui (x, y). 0.5 = halbe Bildschirmhöhe."""
         s = 0.5 / self._fh
         return (wx - self._pan_x) * s, (wz - self._pan_z) * s
 
     def _dot_size(self):
-        """Stern-Größe in screen-units → ~20 px auf 1080p."""
         return max(0.016, 20.0 / (window.size[1] or 1080))
 
     def _lbl_scale(self):
         return 0.6
+
+    def _format_dy(self, dy):
+        """
+        Formatiert den Höhenunterschied (Y) zwischen Stern und Spieler.
+        Gibt (text, color)-Tupel zurück.
+        """
+        if abs(dy) < self.DY_FLAT_THRESHOLD:
+            return '≈ Ebene', color.light_gray
+
+        arrow = '▲' if dy > 0 else '▼'
+        mag = abs(dy)
+        val = f'{mag/1000:.1f}k' if mag >= 1000 else f'{mag:.0f}'
+
+        if dy > 0:
+            # Über dem Spieler: warmes Orange
+            col = color.hsv(30, 0.75, 1.0)
+        else:
+            # Unter dem Spieler: kühles Blau
+            col = color.hsv(205, 0.65, 1.0)
+
+        return f'{arrow} {val}', col
 
     # ── Systeme ───────────────────────────────────────────────────────────────
 
@@ -156,6 +190,7 @@ class Minimap:
             if sid not in cur:
                 destroy(self._star_ents.pop(sid))
                 if sid in self._lbl_ents: destroy(self._lbl_ents.pop(sid))
+                if sid in self._dy_ents:  destroy(self._dy_ents.pop(sid))
                 for e in self._planet_ents.pop(sid, []): destroy(e)
         for s in self._systems:
             sid = s.get('system_id')
@@ -165,7 +200,6 @@ class Minimap:
     def _add_star(self, sid, name):
         dot = Entity(
             parent=camera.ui, model='quad',
-            # color.color(hue, sat, val) – Gelb-Orange, gut sichtbar auf dunkelblau
             color=color.hsv(45, 0.9, 1.0),
             scale=self._dot_size(),
             z=0.0, enabled=self._active,
@@ -173,12 +207,21 @@ class Minimap:
         lbl = Text(
             parent=camera.ui,
             text=name,
-            color=color.hsv(45, 0.6, 1.0),   # Hellgelb
+            color=color.hsv(45, 0.6, 1.0),
             scale=self._lbl_scale(),
+            z=0.0, enabled=self._active,
+        )
+        # NEU: Höhen-Anzeige direkt unter dem Namens-Label
+        dy_lbl = Text(
+            parent=camera.ui,
+            text='',
+            color=color.light_gray,
+            scale=0.42,
             z=0.0, enabled=self._active,
         )
         self._star_ents[sid]   = dot
         self._lbl_ents[sid]    = lbl
+        self._dy_ents[sid]     = dy_lbl
         self._planet_ents[sid] = []
 
     # ── Planeten ──────────────────────────────────────────────────────────────
@@ -196,7 +239,7 @@ class Minimap:
 
             pdot = Entity(
                 parent=camera.ui, model='quad',
-                color=color.hsv(210, 0.6, 0.9),  # Hellblau
+                color=color.hsv(210, 0.6, 0.9),
                 scale=ds * 0.55,
                 position=(ux, uz), z=0.0,
             )
@@ -220,12 +263,14 @@ class Minimap:
     def _place_all(self):
         ds = self._dot_size()
         show_planets = self._fh < self.PLN_THR
+        player_y = self.player.position.y if self.player else 0.0
 
         for s in self._systems:
             sid = s.get('system_id')
             if sid not in self._star_ents:
                 continue
             wx  = s.get('rel_x', 0)
+            wy  = s.get('rel_y', 0)
             wz  = s.get('rel_z', 0)
             ux, uz = self._to_ui(wx, wz)
 
@@ -234,6 +279,15 @@ class Minimap:
 
             lbl = self._lbl_ents[sid]
             lbl.x = ux + ds * 1.4; lbl.y = uz
+
+            # NEU: Höhen-Anzeige direkt unter dem Namen platzieren + aktualisieren
+            dy = wy - player_y
+            dy_text, dy_col = self._format_dy(dy)
+            dy_lbl = self._dy_ents[sid]
+            dy_lbl.text  = dy_text
+            dy_lbl.color = dy_col
+            dy_lbl.x = ux + ds * 1.4
+            dy_lbl.y = uz - 0.022   # leicht unterhalb des Namens-Labels
 
             dist = math.sqrt((wx - self._pan_x)**2 + (wz - self._pan_z)**2)
             if show_planets and dist < self._fh * 1.2:
@@ -270,13 +324,12 @@ class Minimap:
     def toggle(self):
         self._active = not self._active
 
-        # Hintergrund + HUD
         for e in self._all_ui:
             e.enabled = self._active
 
-        # Sterne + Labels
         for dot in self._star_ents.values():  dot.enabled = self._active
         for lbl in self._lbl_ents.values():   lbl.enabled = self._active
+        for dy in self._dy_ents.values():     dy.enabled = self._active
 
         if self._active:
             if self.player:
@@ -284,7 +337,7 @@ class Minimap:
                 self._pan_z = self.player.position.z
             self._fh = self.FH_DEF
             self._reload()
-            self._place_all()   # sofort platzieren vor dem ersten Frame
+            self._place_all()
         else:
             self._clear_planets()
 
@@ -299,9 +352,10 @@ class Minimap:
         self._place_all()
         if self.player:
             px = self.player.position.x
+            py = self.player.position.y
             pz = self.player.position.z
             self._info.text = (
-                f'Spieler ({px:,.0f} | {pz:,.0f})  ·  '
+                f'Spieler ({px:,.0f} | {py:,.0f} | {pz:,.0f})  ·  '
                 f'Zoom {self.FH_DEF/self._fh:.1f}×  ·  '
                 f'{len(self._systems)} Systeme'
             )
