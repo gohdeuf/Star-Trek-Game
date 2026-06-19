@@ -1,328 +1,361 @@
 """
-ui/minimap.py  –  v8 (Final Camera Fix)
-==============================================
-Kernfix: Wir modifizieren die BitMaske der Hauptkamera sicher, indem wir
-das _MM_BIT mit einer binären UND-Verknüpfung (AND NOT) abziehen.
-So wird das geschützte `overall_bit` nicht berührt (AssertionError behoben).
-hide() erhält wieder korrekte Bitmasken (TypeError behoben).
+ui/minimap.py – Galaxy Map (2D Overlay v4 – Höhen-Anzeige)
+=============================================================
+Tab: Öffnen/Schließen  |  Scroll: Zoom  |  LMB-Drag: Schwenken
+
+NEU in v4:
+  Da generator.py Sterne mit zufälliger rel_y (Höhe) im gesamten
+  Sektor-Würfel platziert (siehe world/generator.py: 
+  "rel_y = oy + rng.uniform(0, size)"), die Karte aber eine reine
+  X-Z-Draufsicht ist, fehlte bisher jede Information über den
+  Höhenunterschied zum Spieler.
+
+  Fix: Jeder Stern bekommt eine zusätzliche kleine Text-Anzeige
+  unter dem Namen:
+    ▲ 1.2k   (orange) → Stern liegt über dem Spieler (höheres Y)
+    ▼ 340    (blau)   → Stern liegt unter dem Spieler (niedrigeres Y)
+    ≈ Ebene  (grau)   → Höhenunterschied < 50 Einheiten (vernachlässigbar)
 """
 
 import math
-from ursina import Entity, Text, camera, color, window
-from panda3d.core import (
-    Camera as P3DCamera,
-    OrthographicLens,
-    NodePath,
-    PandaNode,
-    BitMask32,
-    TextNode,
-    LineSegs,
-    GeomVertexData,
-    GeomVertexFormat,
-    GeomVertexWriter,
-    GeomTriangles,
-    Geom,
-    GeomNode,
-)
-import builtins
+from ursina import Entity, Text, camera, color, window, mouse, destroy, Vec2
 
+# ─── DB-Helfer ───────────────────────────────────────────────────────────────
 
-def _get_base():
-    return builtins.__dict__.get('base')
-
-# Wir definieren unser dediziertes Minimap-Bit
-_MM_BIT = BitMask32.bit(8)
-
-
-def _u2p(x, y, z):
-    return x, -z, y
-
-
-def _make_sphere(radius, r, g, b):
-    stacks, slices = 12, 18
-    fmt   = GeomVertexFormat.getV3()
-    vdata = GeomVertexData('sp', fmt, Geom.UHStatic)
-    vdata.setNumRows((stacks + 1) * (slices + 1))
-    vw = GeomVertexWriter(vdata, 'vertex')
-
-    for i in range(stacks + 1):
-        phi = math.pi * i / stacks
-        sp, cp = math.sin(phi), math.cos(phi)
-        for j in range(slices + 1):
-            theta = 2 * math.pi * j / slices
-            vw.addData3(
-                sp * math.cos(theta) * radius,
-                sp * math.sin(theta) * radius,
-                cp * radius,
-            )
-
-    tris = GeomTriangles(Geom.UHStatic)
-    c = slices + 1
-    for i in range(stacks):
-        for j in range(slices):
-            p0 = i * c + j
-            tris.addVertices(p0,     p0 + c,     p0 + 1)
-            tris.addVertices(p0 + 1, p0 + c,     p0 + c + 1)
-
-    geom = Geom(vdata)
-    geom.addPrimitive(tris)
-    gn = GeomNode('sp')
-    gn.addGeom(geom)
-    np = NodePath(gn)
-    np.setColor(r, g, b, 1.0)
-    return np
-
-
-def _fetch_all_systems():
+def _load_systems():
     try:
         from world import database as db
         conn = db.get_connection()
         try:
-            rows = conn.execute(
-                "SELECT system_id, name, rel_x, rel_y, rel_z "
-                "FROM solar_systems"
-            ).fetchall()
-            return [dict(r) for r in rows]
+            return [dict(r) for r in conn.execute(
+                "SELECT system_id, name, rel_x, rel_y, rel_z FROM solar_systems"
+            ).fetchall()]
         finally:
             conn.close()
     except Exception as e:
-        print(f"[MINIMAP] DB-Fehler: {e}")
+        print(f"[MAP] {e}")
         return []
 
 
+def _load_planets(sid):
+    try:
+        import json
+        from world import database as db
+        conn = db.get_connection()
+        try:
+            r = conn.execute(
+                "SELECT planets_data FROM solar_systems WHERE system_id=?", (sid,)
+            ).fetchone()
+            return json.loads(r['planets_data'] or '[]') if r else []
+        finally:
+            conn.close()
+    except:
+        return []
+
+
+# ─── Controller ──────────────────────────────────────────────────────────────
+
+class _MapCtrl(Entity):
+    def __init__(self, m):
+        super().__init__()
+        self._m = m
+
+    def input(self, key):
+        if not self._m._active:
+            return
+        if   key == 'scroll up':   self._m._fh = max(self._m.FH_MIN, self._m._fh * 0.80)
+        elif key == 'scroll down': self._m._fh = min(self._m.FH_MAX, self._m._fh * 1.25)
+
+    def update(self):
+        if self._m._active and mouse.left:
+            vx, vy = mouse.velocity[0], mouse.velocity[1]
+            if vx or vy:
+                ar = window.aspect_ratio or 1.778
+                self._m._pan_x -= vx * self._m._fh * ar
+                self._m._pan_z -= vy * self._m._fh
+        self._m.update()
+
+
+# ─── Galaxie-Karte ────────────────────────────────────────────────────────────
+
 class Minimap:
-    RANGE     = 8_000.0
-    TILT_DEG  = 20
-    SYS_SCALE = 100
-    PLY_SCALE = 70
+    FH_DEF  =  3_000.0
+    FH_MIN  =     60.0
+    FH_MAX  = 80_000.0
+    PLN_THR =    800.0
+    DBREF   =    240
 
-    DR_L, DR_R = 0.74, 0.99
-    DR_B, DR_T = 0.74, 0.99
-
-    DB_REFRESH_INTERVAL = 120
+    DY_FLAT_THRESHOLD = 50.0   # |dy| unterhalb davon gilt als "gleiche Ebene"
 
     def __init__(self, player_ship, world_manager):
-        self.player       = player_ship
-        self.world        = world_manager
-        self._dots        = {}
-        self._all_systems = []
-        self._visible     = True
-        self._ok          = False
-        self._frame_cnt   = 0
+        self.player  = player_ship
+        self.world   = world_manager
+        self._active = False
+        self._fh     = self.FH_DEF
+        self._pan_x  = 0.0
+        self._pan_z  = 0.0
+        self._systems     = []
+        self._star_ents   = {}
+        self._lbl_ents    = {}
+        self._dy_ents     = {}   # sid → Text (Höhen-Anzeige)
+        self._planet_ents = {}
+        self._frame       = 0
 
-        self._base = _get_base()
-        if self._base is None:
-            print("[MINIMAP] 'base' nicht verfügbar")
-            return
-
-        # mm_root unter base.render erstellen
-        self._mm_root = self._base.render.attachNewNode(PandaNode('mm_root'))
-        self._mm_root.setLightOff()
-
-        # 1. Wir verstecken den Node standardmäßig für alle Kameras
-        self._mm_root.hide(BitMask32.allOn())
-        
-        # 2. Wir machen ihn EXKLUSIV für Kameras mit dem _MM_BIT sichtbar
-        self._mm_root.showThrough(_MM_BIT)
-
-        # 3. SICHERER FIX: Der Hauptkamera das _MM_BIT abziehen.
-        #    Das schützt das interne 'overall_bit' und verhindert den AssertionError!
-        if self._base.camNode:
-            current_mask = self._base.camNode.getCameraMask()
-            safe_mask = current_mask & ~_MM_BIT
-            self._base.camNode.setCameraMask(safe_mask)
-
-        self._ok = True
-        self._make_camera()
-        self._make_reference_rings()
-        self._make_player_marker()
-        self._make_hud()
-        self._refresh_systems()
-        print(f"[MINIMAP] OK – {len(self._all_systems)} Systeme geladen")
-
-    # ── Kamera ─────────────────────────────────────────────────────────────
-    def _make_camera(self):
-        half = self.RANGE
-        lens = OrthographicLens()
-        lens.setFilmSize(half * 2.1, half * 2.1)
-        lens.setNearFar(-half * 5, half * 5)
-
-        cam_node = P3DCamera('mm_cam')
-        cam_node.setLens(lens)
-        
-        # Minimap-Kamera bekommt das exklusive Bit zugewiesen
-        cam_node.setCameraMask(_MM_BIT)
-        
-        self._cam = self._mm_root.attachNewNode(cam_node)
-
-        dr = self._base.win.makeDisplayRegion(
-            self.DR_L, self.DR_R,
-            self.DR_B, self.DR_T,
-        )
-        dr.setCamera(self._cam)
-        dr.setClearColorActive(True)
-        dr.setClearDepthActive(True)
-        dr.setClearColor((0.01, 0.03, 0.15, 1.0))
-        dr.setSort(20)
-        self._dr = dr
-
-    # ── Ringe ──────────────────────────────────────────────────────────────
-    def _make_reference_rings(self):
-        self._ring_root = self._mm_root.attachNewNode('mm_rings')
-        segs = 80
-        for frac, alpha in ((0.5, 0.55), (1.0, 0.85)):
-            r  = self.RANGE * frac
-            ls = LineSegs()
-            ls.setColor(0.2, 0.5, 1.0, alpha)
-            ls.setThickness(1.5)
-            for i in range(segs + 1):
-                a  = 2 * math.pi * i / segs
-                pt = (r * math.cos(a), r * math.sin(a), 0.0)
-                ls.moveTo(*pt) if i == 0 else ls.drawTo(*pt)
-            self._ring_root.attachNewNode(ls.create())
-        r   = self.RANGE
-        ls2 = LineSegs()
-        ls2.setColor(0.2, 0.35, 0.7, 0.4)
-        ls2.moveTo(-r, 0, 0); ls2.drawTo(r, 0, 0)
-        ls2.moveTo(0, -r, 0); ls2.drawTo(0, r, 0)
-        self._ring_root.attachNewNode(ls2.create())
-
-    # ── Spieler-Marker ─────────────────────────────────────────────────────
-    def _make_player_marker(self):
-        self._ply_root = self._mm_root.attachNewNode('mm_player')
-        body = _make_sphere(self.PLY_SCALE, 0.0, 0.9, 1.0)
-        body.reparentTo(self._ply_root)
-        tip = _make_sphere(1.0, 0.0, 1.0, 0.7)
-        tip.setScale(self.PLY_SCALE * 0.3,
-                     self.PLY_SCALE * 2.5,
-                     self.PLY_SCALE * 0.3)
-        tip.setPos(0, self.PLY_SCALE * 1.5, 0)
-        tip.reparentTo(self._ply_root)
-
-    # ── HUD ────────────────────────────────────────────────────────────────
-    def _make_hud(self):
-        ar  = window.aspect_ratio or 1.778
-        sx  = ((self.DR_L + self.DR_R) / 2 - 0.5) * ar
-        sy  =  (self.DR_B + self.DR_T) / 2 - 0.5
-        hx  = ((self.DR_R - self.DR_L) / 2) * ar
-        hy  =  (self.DR_T - self.DR_B) / 2
-
-        self._frame = Entity(
-            parent=camera.ui, model='quad',
-            color=color.rgba(20, 90, 200, 100),
-            scale=(hx * 2 + 0.012, hy * 2 + 0.012),
-            position=(sx, sy, 2.5),
-        )
-        self._title = Text(
+        # ── Hintergrund ─────────────────────────────────────────────────────
+        self._bg = Entity(
             parent=camera.ui,
-            text='MINIMAP  [TAB]',
-            position=(sx - hx + 0.005, sy + hy - 0.013),
-            scale=0.48,
-            color=color.rgba(80, 180, 255, 220),
+            model='quad',
+            color=color.hsv(220, 0.7, 0.06),
+            scale=(10, 6),
+            z=0.9,
+            enabled=False,
         )
-        self._coords = Text(
-            parent=camera.ui, text='',
-            position=(sx - hx + 0.005, sy - hy + 0.010),
-            scale=0.44,
-            color=color.rgba(130, 200, 255, 200),
+
+        # ── Spieler-Marker ───────────────────────────────────────────────────
+        self._ply = Entity(
+            parent=camera.ui, model='quad',
+            color=color.cyan,
+            scale=0.025, z=0.0,
+            enabled=False,
         )
-        self._hud_elems = [self._frame, self._title, self._coords]
+        self._ply_lbl = Text(
+            parent=camera.ui,
+            text='◀ Spieler',
+            color=color.cyan,
+            scale=0.65, z=0.0,
+            enabled=False,
+        )
 
-    # ── DB ─────────────────────────────────────────────────────────────────
-    def _refresh_systems(self):
-        self._all_systems = _fetch_all_systems()
-        self._sync_dots(self._all_systems)
+        # ── HUD ──────────────────────────────────────────────────────────────
+        self._hint = Text(
+            parent=camera.ui, enabled=False,
+            text='GALAXIE-KARTE  ·  Scroll: Zoom  ·  LMB: Schwenken  ·  Tab: Schließen',
+            position=(0, 0.46), origin=(0, 0),
+            scale=0.55, color=color.azure, z=-0.5,
+        )
+        self._info = Text(
+            parent=camera.ui, text='', enabled=False,
+            position=(-0.85, -0.46), scale=0.45,
+            color=color.light_gray, z=-0.5,
+        )
+        self._all_ui = [self._bg, self._ply, self._ply_lbl, self._hint, self._info]
 
-    # ── Dots ───────────────────────────────────────────────────────────────
-    def _sync_dots(self, systems):
-        new_ids = {s['system_id'] for s in systems if s.get('system_id') is not None}
+        self._reload()
+        self._ctrl = _MapCtrl(self)
+        print(f"[MAP] Bereit – {len(self._systems)} Systeme | Tab zum Öffnen")
 
-        for sid in list(self._dots):
-            if sid not in new_ids:
-                self._dots[sid].removeNode()
-                del self._dots[sid]
+    # ── Helfer ────────────────────────────────────────────────────────────────
 
-        for sys in systems:
-            sid = sys.get('system_id')
-            if sid is None or sid in self._dots:
-                continue
+    def _to_ui(self, wx, wz):
+        """Weltkoordinaten (X, Z) → camera.ui (x, y). 0.5 = halbe Bildschirmhöhe."""
+        s = 0.5 / self._fh
+        return (wx - self._pan_x) * s, (wz - self._pan_z) * s
 
-            root = self._mm_root.attachNewNode(f'mm_sys_{sid}')
+    def _dot_size(self):
+        return max(0.016, 20.0 / (window.size[1] or 1080))
 
-            sphere = _make_sphere(self.SYS_SCALE, 1.0, 0.85, 0.0)
-            sphere.reparentTo(root)
+    def _lbl_scale(self):
+        return 0.6
 
-            tn = TextNode(f'lbl_{sid}')
-            tn.setText(sys.get('name', '?')[:14])
-            tn.setTextColor(1.0, 0.95, 0.5, 1.0)
-            tn.setAlign(TextNode.ALeft)
-            lbl = root.attachNewNode(tn)
-            lbl.setScale(60)
-            lbl.setPos(self.SYS_SCALE * 1.2, 0, 0)
-            lbl.setBillboardPointEye(self._cam, 0.0, False)   # ← explizite MM-Kamera!
+    def _format_dy(self, dy):
+        """
+        Formatiert den Höhenunterschied (Y) zwischen Stern und Spieler.
+        Gibt (text, color)-Tupel zurück.
+        """
+        if abs(dy) < self.DY_FLAT_THRESHOLD:
+            return '≈ Ebene', color.light_gray
 
-            self._dots[sid] = root
+        arrow = '▲' if dy > 0 else '▼'
+        mag = abs(dy)
+        val = f'{mag/1000:.1f}k' if mag >= 1000 else f'{mag:.0f}'
 
-    def _place_dots(self):
-        px = self.player.position.x
-        py = self.player.position.y
-        pz = self.player.position.z
-
-        for sys in self._all_systems:
-            sid = sys.get('system_id')
-            if sid not in self._dots:
-                continue
-            dx = sys.get('rel_x', 0) - px
-            dy = sys.get('rel_y', 0) - py
-            dz = sys.get('rel_z', 0) - pz
-            rx, ry, rz = _u2p(dx, dy, dz)
-            self._dots[sid].setPos(rx, ry, rz)
-
-    # ── Toggle ─────────────────────────────────────────────────────────────
-    def toggle(self):
-        if not self._ok:
-            return
-        self._visible = not self._visible
-        self._dr.setActive(self._visible)
-        for e in self._hud_elems:
-            e.enabled = self._visible
-        if self._visible:
-            self._mm_root.showThrough(_MM_BIT)
+        if dy > 0:
+            # Über dem Spieler: warmes Orange
+            col = color.hsv(30, 0.75, 1.0)
         else:
-            self._mm_root.hide(BitMask32.allOn())
+            # Unter dem Spieler: kühles Blau
+            col = color.hsv(205, 0.65, 1.0)
 
-    # ── Update ─────────────────────────────────────────────────────────────
+        return f'{arrow} {val}', col
+
+    # ── Systeme ───────────────────────────────────────────────────────────────
+
+    def _reload(self):
+        self._systems = _load_systems()
+        self._sync()
+
+    def _sync(self):
+        cur = {s['system_id'] for s in self._systems if s.get('system_id')}
+        for sid in list(self._star_ents):
+            if sid not in cur:
+                destroy(self._star_ents.pop(sid))
+                if sid in self._lbl_ents: destroy(self._lbl_ents.pop(sid))
+                if sid in self._dy_ents:  destroy(self._dy_ents.pop(sid))
+                for e in self._planet_ents.pop(sid, []): destroy(e)
+        for s in self._systems:
+            sid = s.get('system_id')
+            if sid and sid not in self._star_ents:
+                self._add_star(sid, s.get('name', '?'))
+
+    def _add_star(self, sid, name):
+        dot = Entity(
+            parent=camera.ui, model='quad',
+            color=color.hsv(45, 0.9, 1.0),
+            scale=self._dot_size(),
+            z=0.0, enabled=self._active,
+        )
+        lbl = Text(
+            parent=camera.ui,
+            text=name,
+            color=color.hsv(45, 0.6, 1.0),
+            scale=self._lbl_scale(),
+            z=0.0, enabled=self._active,
+        )
+        # NEU: Höhen-Anzeige direkt unter dem Namens-Label
+        dy_lbl = Text(
+            parent=camera.ui,
+            text='',
+            color=color.light_gray,
+            scale=0.42,
+            z=0.0, enabled=self._active,
+        )
+        self._star_ents[sid]   = dot
+        self._lbl_ents[sid]    = lbl
+        self._dy_ents[sid]     = dy_lbl
+        self._planet_ents[sid] = []
+
+    # ── Planeten ──────────────────────────────────────────────────────────────
+
+    def _build_planets(self, sid, star_wx, star_wz):
+        for e in self._planet_ents.get(sid, []): destroy(e)
+        ents = []
+        for p in _load_planets(sid):
+            orb   = p.get('orbit_radius', 0)
+            angle = math.radians(p.get('orbit_angle', 0))
+            pwx   = star_wx + orb * math.cos(angle)
+            pwz   = star_wz + orb * math.sin(angle)
+            ux, uz = self._to_ui(pwx, pwz)
+            ds     = self._dot_size()
+
+            pdot = Entity(
+                parent=camera.ui, model='quad',
+                color=color.hsv(210, 0.6, 0.9),
+                scale=ds * 0.55,
+                position=(ux, uz), z=0.0,
+            )
+            plbl = Text(
+                parent=camera.ui,
+                text=p.get('name', '?')[:12],
+                color=color.hsv(210, 0.4, 0.85),
+                scale=0.4,
+                x=ux + ds * 1.3, y=uz, z=0.0,
+            )
+            ents.extend([pdot, plbl])
+        self._planet_ents[sid] = ents
+
+    def _clear_planets(self):
+        for sid in list(self._planet_ents):
+            for e in self._planet_ents[sid]: destroy(e)
+            self._planet_ents[sid] = []
+
+    # ── Platzierung ───────────────────────────────────────────────────────────
+
+    def _place_all(self):
+        ds = self._dot_size()
+        show_planets = self._fh < self.PLN_THR
+        player_y = self.player.position.y if self.player else 0.0
+
+        for s in self._systems:
+            sid = s.get('system_id')
+            if sid not in self._star_ents:
+                continue
+            wx  = s.get('rel_x', 0)
+            wy  = s.get('rel_y', 0)
+            wz  = s.get('rel_z', 0)
+            ux, uz = self._to_ui(wx, wz)
+
+            dot = self._star_ents[sid]
+            dot.x = ux; dot.y = uz; dot.scale = ds
+
+            lbl = self._lbl_ents[sid]
+            lbl.x = ux + ds * 1.4; lbl.y = uz
+
+            # NEU: Höhen-Anzeige direkt unter dem Namen platzieren + aktualisieren
+            dy = wy - player_y
+            dy_text, dy_col = self._format_dy(dy)
+            dy_lbl = self._dy_ents[sid]
+            dy_lbl.text  = dy_text
+            dy_lbl.color = dy_col
+            dy_lbl.x = ux + ds * 1.4
+            dy_lbl.y = uz - 0.022   # leicht unterhalb des Namens-Labels
+
+            dist = math.sqrt((wx - self._pan_x)**2 + (wz - self._pan_z)**2)
+            if show_planets and dist < self._fh * 1.2:
+                if not self._planet_ents.get(sid):
+                    self._build_planets(sid, wx, wz)
+                else:
+                    planets = _load_planets(sid)
+                    ents    = self._planet_ents[sid]
+                    for i, p in enumerate(planets):
+                        orb   = p.get('orbit_radius', 0)
+                        angle = math.radians(p.get('orbit_angle', 0))
+                        pwx   = wx + orb * math.cos(angle)
+                        pwz   = wz + orb * math.sin(angle)
+                        eux, euz = self._to_ui(pwx, pwz)
+                        j = i * 2
+                        if j   < len(ents): ents[j].x   = eux; ents[j].y   = euz; ents[j].scale = ds * 0.55
+                        if j+1 < len(ents): ents[j+1].x = eux + ds*1.3; ents[j+1].y = euz
+            else:
+                for e in self._planet_ents.get(sid, []): destroy(e)
+                self._planet_ents[sid] = []
+
+        # Spieler
+        if self.player:
+            px, pz = self.player.position.x, self.player.position.z
+            ux, uz = self._to_ui(px, pz)
+            self._ply.x = ux;  self._ply.y = uz
+            self._ply.scale = ds * 1.6
+            self._ply.rotation_z = -self.player.rotation_y
+            self._ply_lbl.x = ux + ds * 2.2
+            self._ply_lbl.y = uz
+
+    # ── Toggle ────────────────────────────────────────────────────────────────
+
+    def toggle(self):
+        self._active = not self._active
+
+        for e in self._all_ui:
+            e.enabled = self._active
+
+        for dot in self._star_ents.values():  dot.enabled = self._active
+        for lbl in self._lbl_ents.values():   lbl.enabled = self._active
+        for dy in self._dy_ents.values():     dy.enabled = self._active
+
+        if self._active:
+            if self.player:
+                self._pan_x = self.player.position.x
+                self._pan_z = self.player.position.z
+            self._fh = self.FH_DEF
+            self._reload()
+            self._place_all()
+        else:
+            self._clear_planets()
+
+    # ── Update ────────────────────────────────────────────────────────────────
+
     def update(self):
-        if not self._ok or not self._visible or not self.player:
+        if not self._active:
             return
-
-        self._frame_cnt += 1
-        if self._frame_cnt % self.DB_REFRESH_INTERVAL == 0:
-            self._refresh_systems()
-
-        px  = self.player.position.x
-        py  = self.player.position.y
-        pz  = self.player.position.z
-        hdg = self.player.rotation_y
-
-        self._ply_root.setPos(0, 0, 0)
-        self._ply_root.setHpr(-hdg, 0, 0)
-        self._ring_root.setPos(0, 0, 0)
-
-        tilt  = math.radians(self.TILT_DEG)
-        dist  = self.RANGE * 1.6
-        h_rad = math.radians(-hdg)
-
-        self._cam.setPos(
-             math.sin(h_rad) * dist * math.sin(tilt),
-            -math.cos(h_rad) * dist * math.sin(tilt),
-             dist * math.cos(tilt),
-        )
-        self._cam.setHpr(-hdg, -(90 - self.TILT_DEG), 0)
-
-        self._place_dots()
-
-        self._coords.text = (
-            f'X:{px:7.0f}  Y:{py:5.0f}  Z:{pz:7.0f}\n'
-            f'HDG: {hdg % 360:6.1f}°'
-        )
+        self._frame += 1
+        if self._frame % self.DBREF == 0:
+            self._reload()
+        self._place_all()
+        if self.player:
+            px = self.player.position.x
+            py = self.player.position.y
+            pz = self.player.position.z
+            self._info.text = (
+                f'Spieler ({px:,.0f} | {py:,.0f} | {pz:,.0f})  ·  '
+                f'Zoom {self.FH_DEF/self._fh:.1f}×  ·  '
+                f'{len(self._systems)} Systeme'
+            )

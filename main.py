@@ -239,6 +239,7 @@ def main():
 	
 	class InputHandler(Entity):
 		def update(self):
+			minimap.update()
 			if held_keys['f12']: 
 				on_cache_reset_key()
 			if held_keys['escape']:

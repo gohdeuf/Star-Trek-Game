@@ -172,6 +172,18 @@ class WorldManager(Entity):
             scale=3.0,  # Stern ist größer als Planeten
             name=star_name,
         )
+
+
+        self.planet_entities[star_key] = {
+            "entity": star_entity,
+            "data": {"name": star_name},
+            "system_id": system_id,
+            "sector_id": system.get("sector_id"),
+            "is_star": True,
+        }
+
+        if hasattr(self, "minimap") and self.minimap:
+            self.minimap.register_star(system_id, star_name, (star_x, star_y, star_z))
         
         # Speichere Stern-Entity separat mit eindeutigem Key
         self.planet_entities[star_key] = {
