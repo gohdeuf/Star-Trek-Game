@@ -24,7 +24,9 @@ setup(
 
             "plugins": [
                 "pandagl",
+                "p3tinydisplay",
                 "p3openal_audio",
+            ],
             ],
 
             "requirements_path": "requirements.txt",
