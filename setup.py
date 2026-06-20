@@ -6,7 +6,7 @@ setup(
         "build_apps": {
             "platforms": ["win_amd64"],
 
-            "gui_apps": {
+            "console_apps": {
                 "Bindoj": "main.py",
             },
 
