@@ -1,3 +1,6 @@
+**This is not beeing worked on active anymore for active version refer to [gohdeuf/Star-Trek-Game-Godot](https://github.com/gohdeuf/Star-Trek-Game-Godot)**
+
+
 #[English](README-english.md)
 
 # SpielPython — 3D-Weltraum-Spiel mit ursina

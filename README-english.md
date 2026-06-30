@@ -1,3 +1,7 @@
+**This is not beeing worked on active anymore for active version refer to [gohdeuf/Star-Trek-Game-Godot](https://github.com/gohdeuf/Star-Trek-Game-Godot)**
+
+
+
 # SpielPython — A 3D space game with Ursina
 
 A modular project structure for a 3D game using **ursina** (Python 3D engine).
